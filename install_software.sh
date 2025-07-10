@@ -519,6 +519,106 @@ EOM
     echo "Run 'gcloud init' to initialize."
 }
 
+# Function to install Let's Encrypt SSL (Certbot)
+install_letsencrypt_ssl() {
+    echo "Installing Certbot for Let's Encrypt SSL..."
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        sudo apt-get update
+        sudo apt-get install -y certbot python3-certbot-apache python3-certbot-nginx
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "yum" ]; then
+        sudo yum install -y epel-release
+        sudo yum install -y certbot python3-certbot-apache python3-certbot-nginx
+    fi
+    echo "Certbot installed successfully."
+
+    echo "\n--- Configuring Let's Encrypt SSL ---"
+    read -p "Enter your domain name(s) (e.g., example.com www.example.com): " DOMAINS
+    read -p "Choose your web server for automatic configuration (apache/nginx/none): " WEBSERVER_CHOICE
+
+    case $WEBSERVER_CHOICE in
+        apache)
+            sudo certbot --apache -d $DOMAINS
+            ;;
+        nginx)
+            sudo certbot --nginx -d $DOMAINS
+            ;;
+        none)
+            read -p "Enter your webroot path (e.g., /var/www/html): " WEBROOT_PATH
+            sudo certbot certonly --webroot -w $WEBROOT_PATH -d $DOMAINS
+            ;;
+        *)
+            echo "Invalid choice. Please configure SSL manually using 'sudo certbot'."
+            ;;
+    esac
+    echo "\nLet's Encrypt SSL configuration attempted. Certbot will attempt to renew certificates automatically."
+    echo "Please verify your web server configuration and certificate installation."
+}
+
+# Function to install SNMP
+install_snmp() {
+    echo "Installing SNMP..."
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        sudo apt-get update
+        sudo apt-get install -y snmp snmpd
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "yum" ]; then
+        sudo yum install -y net-snmp net-snmp-utils
+    fi
+    echo "SNMP installed successfully."
+
+    echo "\n--- Configuring SNMP ---"
+    read -p "Enter a community string for SNMP (e.g., public): " COMMUNITY_STRING
+    if [ -f /etc/snmp/snmpd.conf ]; then
+        sudo sed -i '/^rocommunity/d' /etc/snmp/snmpd.conf
+        sudo sed -i '/^com2sec/d' /etc/snmp/snmpd.conf
+        echo "rocommunity $COMMUNITY_STRING" | sudo tee -a /etc/snmp/snmpd.conf
+        echo "SNMP community string set to: $COMMUNITY_STRING"
+    else
+        echo "/etc/snmp/snmpd.conf not found. Please configure SNMP manually."
+    fi
+    sudo systemctl restart snmpd
+    sudo systemctl enable snmpd
+    echo "SNMP configured and service restarted."
+}
+
+# Function to install SSH and configure it
+install_ssh() {
+    echo "Installing OpenSSH Server..."
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        sudo apt-get update
+        sudo apt-get install -y openssh-server
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "yum" ]; then
+        sudo yum install -y openssh-server
+    fi
+    sudo systemctl start sshd
+    sudo systemctl enable sshd
+    echo "OpenSSH Server installed successfully."
+
+    echo "\n--- Configuring SSH ---"
+    read -p "Enter new SSH port (e.g., 2222, leave empty for default 22): " NEW_SSH_PORT
+    if [ -n "$NEW_SSH_PORT" ]; then
+        sudo sed -i "s/^#Port 22/Port $NEW_SSH_PORT/g" /etc/ssh/sshd_config
+        sudo sed -i "s/^Port 22/Port $NEW_SSH_PORT/g" /etc/ssh/sshd_config
+        sudo sed -i "s/^PermitRootLogin prohibit-password/PermitRootLogin yes/g" /etc/ssh/sshd_config
+        echo "SSH port changed to $NEW_SSH_PORT."
+    else
+        echo "SSH port remains default (22)."
+    fi
+
+    read -p "Enable root login with password? (y/N): " ENABLE_ROOT_LOGIN
+    if [[ "$ENABLE_ROOT_LOGIN" =~ ^[Yy]$ ]]; then
+        sudo sed -i "s/^#PermitRootLogin prohibit-password/PermitRootLogin yes/g" /etc/ssh/sshd_config
+        sudo sed -i "s/^PermitRootLogin prohibit-password/PermitRootLogin yes/g" /etc/ssh/sshd_config
+        sudo sed -i "s/^PermitRootLogin without-password/PermitRootLogin yes/g" /etc/ssh/sshd_config
+        echo "Root login with password enabled. \nWARNING: Enabling root login with password is a security risk. Consider using SSH keys instead."
+    else
+        echo "Root login with password remains disabled or unchanged."
+    fi
+
+    echo "Restarting SSH service..."
+    sudo systemctl restart sshd
+    echo "SSH configuration applied and service restarted. Please reconnect using the new port if changed."
+}
+
 # Main menu
 main_menu() {
     detect_pkg_manager
@@ -555,8 +655,11 @@ main_menu() {
     echo "30. AWS CLI"
     echo "31. Azure CLI"
     echo "32. GCP CLI"
-    echo "33. Exit"
-    read -p "Enter your choice [1-33]: " choice
+    echo "33. Let's Encrypt SSL (Certbot)"
+    echo "34. SNMP"
+    echo "35. SSH"
+    echo "36. Exit"
+    read -p "Enter your choice [1-36]: " choice
 
     case $choice in
         1) install_docker ;;
@@ -591,7 +694,10 @@ main_menu() {
         30) install_aws_cli ;;
         31) install_azure_cli ;;
         32) install_gcp_cli ;;
-        33) exit 0 ;;
+        33) install_letsencrypt_ssl ;;
+        34) install_snmp ;;
+        35) install_ssh ;;
+        36) exit 0 ;;
         *) echo "Invalid option. Please try again." ;;
     esac
 }
