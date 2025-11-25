@@ -42,8 +42,29 @@ PROXMOX_SERVICES=()
 detect_cluster() {
     if [ -f /etc/pve/corosync.conf ] && [ -f /etc/corosync/corosync.conf ]; then
         IS_CLUSTER=true
-        CLUSTER_NAME=$(pvecm status 2>/dev/null | grep "Cluster name:" | awk '{print $3}')
+
+        # Try multiple methods to get cluster name
+        # Method 1: Parse from corosync.conf file
+        CLUSTER_NAME=$(grep -oP 'cluster_name:\s*\K\S+' /etc/pve/corosync.conf 2>/dev/null)
+
+        # Method 2: Try pvecm status with different patterns
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(pvecm status 2>/dev/null | grep -i "cluster name" | awk -F': ' '{print $2}' | tr -d ' ')
+        fi
+
+        # Method 3: Try alternative pvecm parsing
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(pvecm status 2>/dev/null | awk '/Cluster name:/ {print $3}')
+        fi
+
+        # Method 4: Parse corosync.conf with awk
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(awk '/cluster_name:/ {print $2}' /etc/pve/corosync.conf 2>/dev/null)
+        fi
+
+        # Fallback if all methods fail
         [ -z "$CLUSTER_NAME" ] && CLUSTER_NAME="Unknown"
+
         PROXMOX_SERVICES=("${BASE_SERVICES[@]}" "${CLUSTER_SERVICES[@]}")
     else
         IS_CLUSTER=false
