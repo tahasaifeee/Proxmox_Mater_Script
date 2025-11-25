@@ -1280,6 +1280,14 @@ download_distro_image() {
             filename="CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
             url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
             ;;
+        "oracle-9")
+            filename="OL9U4_x86_64-kvm-b234.qcow2"
+            url="https://yum.oracle.com/templates/OracleLinux/OL9/u4/x86_64/OL9U4_x86_64-kvm-b234.qcow2"
+            ;;
+        "oracle-8")
+            filename="OL8U10_x86_64-kvm-b245.qcow2"
+            url="https://yum.oracle.com/templates/OracleLinux/OL8/u10/x86_64/OL8U10_x86_64-kvm-b245.qcow2"
+            ;;
         "fedora-39")
             filename="Fedora-Cloud-Base-39-latest.x86_64.qcow2"
             url="https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2"
@@ -1517,7 +1525,7 @@ customize_vm() {
 
     if [[ "$distro" =~ ubuntu|debian ]]; then
         pkg_manager="apt-get"
-    elif [[ "$distro" =~ alma|rocky|centos|fedora ]]; then
+    elif [[ "$distro" =~ alma|rocky|centos|fedora|oracle ]]; then
         pkg_manager="dnf"
     fi
 
@@ -1775,9 +1783,11 @@ template_creator_menu() {
         echo "8.  Rocky Linux 9"
         echo "9.  Rocky Linux 8"
         echo "10. CentOS Stream 9"
+        echo "11. Oracle Linux 9"
+        echo "12. Oracle Linux 8"
         echo ""
         echo -e "${CYAN}=== Fedora ===${NC}"
-        echo "11. Fedora 39"
+        echo "13. Fedora 39"
         echo ""
         echo "0.  Back to main menu"
         echo ""
@@ -1815,6 +1825,12 @@ template_creator_menu() {
                 create_template_workflow "centos-stream-9"
                 ;;
             11)
+                create_template_workflow "oracle-9"
+                ;;
+            12)
+                create_template_workflow "oracle-8"
+                ;;
+            13)
                 create_template_workflow "fedora-39"
                 ;;
             0)
