@@ -1280,6 +1280,14 @@ download_distro_image() {
             filename="CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
             url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
             ;;
+        "oracle-9")
+            filename="OL9U4_x86_64-kvm-b234.qcow2"
+            url="https://yum.oracle.com/templates/OracleLinux/OL9/u4/x86_64/OL9U4_x86_64-kvm-b234.qcow2"
+            ;;
+        "oracle-8")
+            filename="OL8U10_x86_64-kvm-b245.qcow2"
+            url="https://yum.oracle.com/templates/OracleLinux/OL8/u10/x86_64/OL8U10_x86_64-kvm-b245.qcow2"
+            ;;
         "fedora-39")
             filename="Fedora-Cloud-Base-39-latest.x86_64.qcow2"
             url="https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2"
@@ -1307,7 +1315,9 @@ download_distro_image() {
     echo "" >&2
 
     # Download with better error handling
-    wget --show-progress -O "$dest_file" "$url" 2>&1 >&2
+    # wget outputs to stderr by default, which is what we want
+    # Only the final file path echo goes to stdout for capture
+    wget --show-progress -O "$dest_file" "$url"
     local wget_status=$?
 
     if [ $wget_status -eq 0 ]; then
@@ -1515,12 +1525,25 @@ customize_vm() {
 
     if [[ "$distro" =~ ubuntu|debian ]]; then
         pkg_manager="apt-get"
-    elif [[ "$distro" =~ alma|rocky|centos|fedora ]]; then
+    elif [[ "$distro" =~ alma|rocky|centos|fedora|oracle ]]; then
         pkg_manager="dnf"
     fi
 
     # Create cloud-init user-data configuration
     local cloudinit_file="/tmp/user-data-${vmid}.yml"
+
+    # Build SSH config content
+    local ssh_config="# Cloud-init SSH configuration
+# This file ensures password authentication is enabled
+PasswordAuthentication yes
+PermitRootLogin yes
+PubkeyAuthentication yes"
+
+    # Add custom SSH port if not default
+    if [ "$TMPL_SSH_PORT" != "22" ]; then
+        ssh_config="${ssh_config}
+Port ${TMPL_SSH_PORT}"
+    fi
 
     cat > "$cloudinit_file" <<EOF
 #cloud-config
@@ -1540,17 +1563,32 @@ chpasswd:
 ssh_pwauth: true
 disable_root: false
 
-runcmd:
-  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-EOF
+# Create separate SSH config file for password authentication
+write_files:
+  - path: /etc/ssh/sshd_config.d/50-cloud-init-password-auth.conf
+    content: |
+$(echo "$ssh_config" | sed 's/^/      /')
+    permissions: '0644'
+    owner: root:root
 
-    # Add SSH port configuration if not default
-    if [ "$TMPL_SSH_PORT" != "22" ]; then
-        cat >> "$cloudinit_file" <<EOF
-  - sed -i 's/^#*Port.*/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
-EOF
+runcmd:
+  - mkdir -p /etc/ssh/sshd_config.d
+  - chmod 755 /etc/ssh/sshd_config.d
+  - |
+    # Ensure main sshd_config includes files from sshd_config.d
+    if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
+      echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
     fi
+  - |
+    # Fallback: Also update main sshd_config directly for compatibility
+    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - |
+    # Add PasswordAuthentication if it doesn't exist in main config
+    if ! grep -q "^PasswordAuthentication" /etc/ssh/sshd_config; then
+      echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+    fi
+EOF
 
     # Add qemu-guest-agent installation if requested
     if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
@@ -1568,6 +1606,20 @@ EOF
   - systemctl start qemu-guest-agent
 EOF
         fi
+    fi
+
+    # Add SSH port configuration fallback if not default
+    if [ "$TMPL_SSH_PORT" != "22" ]; then
+        cat >> "$cloudinit_file" <<'PORTEOF'
+  - |
+    # Update SSH port in main config
+    sed -i 's/^#*Port.*/Port SSHPORT/' /etc/ssh/sshd_config
+    if ! grep -q "^Port" /etc/ssh/sshd_config; then
+      echo "Port SSHPORT" >> /etc/ssh/sshd_config
+    fi
+PORTEOF
+        # Replace SSHPORT placeholder with actual port
+        sed -i "s/SSHPORT/${TMPL_SSH_PORT}/g" "$cloudinit_file"
     fi
 
     # Restart SSH to apply changes
@@ -1773,9 +1825,11 @@ template_creator_menu() {
         echo "8.  Rocky Linux 9"
         echo "9.  Rocky Linux 8"
         echo "10. CentOS Stream 9"
+        echo "11. Oracle Linux 9"
+        echo "12. Oracle Linux 8"
         echo ""
         echo -e "${CYAN}=== Fedora ===${NC}"
-        echo "11. Fedora 39"
+        echo "13. Fedora 39"
         echo ""
         echo "0.  Back to main menu"
         echo ""
@@ -1813,6 +1867,12 @@ template_creator_menu() {
                 create_template_workflow "centos-stream-9"
                 ;;
             11)
+                create_template_workflow "oracle-9"
+                ;;
+            12)
+                create_template_workflow "oracle-8"
+                ;;
+            13)
                 create_template_workflow "fedora-39"
                 ;;
             0)
