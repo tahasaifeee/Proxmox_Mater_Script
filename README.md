@@ -65,7 +65,32 @@ The script intelligently manages services based on your node configuration:
 
 The script automatically detects cluster configuration and only manages cluster services when appropriate.
 
-## Installation
+## Quick Start (One-Command Installation)
+
+Run this single command on your Proxmox server to download and execute the script:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tahasaifeee/Proxmox_Mater_Script/main/proxmox-master.sh)"
+```
+
+**Alternative methods:**
+
+Using wget:
+```bash
+bash -c "$(wget -qO- https://raw.githubusercontent.com/tahasaifeee/Proxmox_Mater_Script/main/proxmox-master.sh)"
+```
+
+If the main branch doesn't exist, try:
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tahasaifeee/Proxmox_Mater_Script/master/proxmox-master.sh)"
+```
+
+**Direct raw link:**
+```
+https://raw.githubusercontent.com/tahasaifeee/Proxmox_Mater_Script/main/proxmox-master.sh
+```
+
+## Manual Installation
 
 1. Copy the script to your Proxmox server:
    ```bash
