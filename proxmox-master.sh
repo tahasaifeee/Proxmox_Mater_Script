@@ -1,0 +1,1111 @@
+#!/bin/bash
+
+#############################################
+# Proxmox Master Management Script
+# One-click menu for managing Proxmox services
+#############################################
+
+# Color codes for better UI
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+
+# Global variables
+IS_CLUSTER=false
+CLUSTER_NAME=""
+NODE_NAME=$(hostname)
+
+# Base Proxmox services (always present)
+BASE_SERVICES=(
+    "pvedaemon"
+    "pveproxy"
+    "pvestatd"
+    "pve-firewall"
+)
+
+# Cluster-only services
+CLUSTER_SERVICES=(
+    "pve-cluster"
+    "pve-ha-lrm"
+    "pve-ha-crm"
+    "corosync"
+)
+
+# Combined array (will be set based on cluster detection)
+PROXMOX_SERVICES=()
+
+# Function to detect cluster mode
+detect_cluster() {
+    if [ -f /etc/pve/corosync.conf ] && [ -f /etc/corosync/corosync.conf ]; then
+        IS_CLUSTER=true
+        CLUSTER_NAME=$(pvecm status 2>/dev/null | grep "Cluster name:" | awk '{print $3}')
+        [ -z "$CLUSTER_NAME" ] && CLUSTER_NAME="Unknown"
+        PROXMOX_SERVICES=("${BASE_SERVICES[@]}" "${CLUSTER_SERVICES[@]}")
+    else
+        IS_CLUSTER=false
+        PROXMOX_SERVICES=("${BASE_SERVICES[@]}")
+    fi
+}
+
+# Function to print header
+print_header() {
+    clear
+    echo -e "${BLUE}================================================${NC}"
+    echo -e "${BLUE}     Proxmox Master Management Script${NC}"
+    echo -e "${BLUE}================================================${NC}"
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster${NC} | ${MAGENTA}Cluster Name: $CLUSTER_NAME${NC}"
+        echo -e "${CYAN}Node: $NODE_NAME${NC}"
+    else
+        echo -e "${CYAN}Mode: Standalone${NC} | ${MAGENTA}Node: $NODE_NAME${NC}"
+    fi
+    echo -e "${BLUE}================================================${NC}"
+    echo ""
+}
+
+# Function to check if running as root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error: This script must be run as root${NC}"
+        exit 1
+    fi
+}
+
+# Function to check status of all services
+check_status() {
+    print_header
+    echo -e "${YELLOW}Checking status of all Proxmox services...${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster - Checking all services (Base + Cluster)${NC}"
+    else
+        echo -e "${CYAN}Mode: Standalone - Checking base services only${NC}"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Base Services ===${NC}"
+    for service in "${BASE_SERVICES[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            echo -e "${GREEN}✓${NC} $service: ${GREEN}ACTIVE${NC}"
+        else
+            echo -e "${RED}✗${NC} $service: ${RED}INACTIVE${NC}"
+        fi
+    done
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo ""
+        echo -e "${BLUE}=== Cluster Services ===${NC}"
+        for service in "${CLUSTER_SERVICES[@]}"; do
+            if systemctl is-active --quiet "$service"; then
+                echo -e "${GREEN}✓${NC} $service: ${GREEN}ACTIVE${NC}"
+            else
+                echo -e "${RED}✗${NC} $service: ${RED}INACTIVE${NC}"
+            fi
+        done
+    fi
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+# Function to start all services
+start_services() {
+    print_header
+    echo -e "${YELLOW}Starting all Proxmox services...${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster - Starting all services${NC}"
+    else
+        echo -e "${CYAN}Mode: Standalone - Starting base services${NC}"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Starting Base Services ===${NC}"
+    for service in "${BASE_SERVICES[@]}"; do
+        echo -n "Starting $service... "
+        if systemctl start "$service" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAILED${NC}"
+        fi
+    done
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo ""
+        echo -e "${BLUE}=== Starting Cluster Services ===${NC}"
+        for service in "${CLUSTER_SERVICES[@]}"; do
+            echo -n "Starting $service... "
+            if systemctl start "$service" 2>/dev/null; then
+                echo -e "${GREEN}OK${NC}"
+            else
+                echo -e "${RED}FAILED${NC}"
+            fi
+        done
+    fi
+
+    echo ""
+    echo -e "${GREEN}Operation completed!${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# Function to stop all services
+stop_services() {
+    print_header
+    echo -e "${RED}WARNING: This will stop all Proxmox services!${NC}"
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${RED}WARNING: This node is part of a cluster!${NC}"
+        echo -e "${YELLOW}Stopping cluster services may affect HA and cluster operations.${NC}"
+    fi
+
+    read -p "Are you sure? (yes/no): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "Operation cancelled."
+        sleep 2
+        return
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Stopping all Proxmox services...${NC}"
+    echo ""
+
+    # Stop cluster services first (in reverse order)
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${BLUE}=== Stopping Cluster Services ===${NC}"
+        for ((idx=${#CLUSTER_SERVICES[@]}-1 ; idx>=0 ; idx--)); do
+            service="${CLUSTER_SERVICES[idx]}"
+            echo -n "Stopping $service... "
+            if systemctl stop "$service" 2>/dev/null; then
+                echo -e "${GREEN}OK${NC}"
+            else
+                echo -e "${RED}FAILED${NC}"
+            fi
+        done
+        echo ""
+    fi
+
+    # Then stop base services (in reverse order)
+    echo -e "${BLUE}=== Stopping Base Services ===${NC}"
+    for ((idx=${#BASE_SERVICES[@]}-1 ; idx>=0 ; idx--)); do
+        service="${BASE_SERVICES[idx]}"
+        echo -n "Stopping $service... "
+        if systemctl stop "$service" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAILED${NC}"
+        fi
+    done
+
+    echo ""
+    echo -e "${GREEN}Operation completed!${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# Function to restart all services
+restart_services() {
+    print_header
+    echo -e "${YELLOW}Restarting all Proxmox services...${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster - Restarting all services${NC}"
+        echo -e "${YELLOW}Note: Cluster services will be restarted, this may briefly affect cluster communication.${NC}"
+    else
+        echo -e "${CYAN}Mode: Standalone - Restarting base services${NC}"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Restarting Base Services ===${NC}"
+    for service in "${BASE_SERVICES[@]}"; do
+        echo -n "Restarting $service... "
+        if systemctl restart "$service" 2>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${RED}FAILED${NC}"
+        fi
+    done
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo ""
+        echo -e "${BLUE}=== Restarting Cluster Services ===${NC}"
+        for service in "${CLUSTER_SERVICES[@]}"; do
+            echo -n "Restarting $service... "
+            if systemctl restart "$service" 2>/dev/null; then
+                echo -e "${GREEN}OK${NC}"
+            else
+                echo -e "${RED}FAILED${NC}"
+            fi
+        done
+    fi
+
+    echo ""
+    echo -e "${GREEN}Operation completed!${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# Function to manage individual service
+manage_individual() {
+    while true; do
+        print_header
+        echo -e "${YELLOW}Manage Individual Service${NC}"
+        echo ""
+
+        if [ "$IS_CLUSTER" = true ]; then
+            echo -e "${CYAN}Mode: Cluster${NC}"
+        else
+            echo -e "${CYAN}Mode: Standalone${NC}"
+        fi
+        echo ""
+
+        echo -e "${BLUE}=== Base Services ===${NC}"
+        local counter=1
+        for i in "${!BASE_SERVICES[@]}"; do
+            service="${BASE_SERVICES[$i]}"
+            if systemctl is-active --quiet "$service"; then
+                status="${GREEN}[ACTIVE]${NC}"
+            else
+                status="${RED}[INACTIVE]${NC}"
+            fi
+            echo -e "$counter. $service $status"
+            ((counter++))
+        done
+
+        if [ "$IS_CLUSTER" = true ]; then
+            echo ""
+            echo -e "${BLUE}=== Cluster Services ===${NC}"
+            for i in "${!CLUSTER_SERVICES[@]}"; do
+                service="${CLUSTER_SERVICES[$i]}"
+                if systemctl is-active --quiet "$service"; then
+                    status="${GREEN}[ACTIVE]${NC}"
+                else
+                    status="${RED}[INACTIVE]${NC}"
+                fi
+                echo -e "$counter. $service $status"
+                ((counter++))
+            done
+        fi
+
+        echo ""
+        echo "0. Back to menu"
+        echo ""
+        read -p "Select service number: " service_num
+
+        if [ "$service_num" = "0" ]; then
+            break
+        fi
+
+        # Calculate which service was selected
+        if [ "$service_num" -ge 1 ] && [ "$service_num" -le "${#BASE_SERVICES[@]}" ]; then
+            selected_service="${BASE_SERVICES[$((service_num-1))]}"
+            manage_service_submenu "$selected_service"
+        elif [ "$IS_CLUSTER" = true ] && [ "$service_num" -gt "${#BASE_SERVICES[@]}" ] && [ "$service_num" -lt "$counter" ]; then
+            cluster_idx=$((service_num - ${#BASE_SERVICES[@]} - 1))
+            selected_service="${CLUSTER_SERVICES[$cluster_idx]}"
+            manage_service_submenu "$selected_service"
+        else
+            echo -e "${RED}Invalid selection${NC}"
+            sleep 1
+        fi
+    done
+}
+
+# Function for service submenu
+manage_service_submenu() {
+    local service=$1
+
+    while true; do
+        print_header
+        echo -e "${YELLOW}Managing: $service${NC}"
+        echo ""
+
+        if systemctl is-active --quiet "$service"; then
+            echo -e "Status: ${GREEN}ACTIVE${NC}"
+        else
+            echo -e "Status: ${RED}INACTIVE${NC}"
+        fi
+
+        echo ""
+        echo "1. Start"
+        echo "2. Stop"
+        echo "3. Restart"
+        echo "4. Status (detailed)"
+        echo "0. Back"
+        echo ""
+        read -p "Select action: " action
+
+        case $action in
+            1)
+                echo ""
+                systemctl start "$service"
+                echo -e "${GREEN}Service started${NC}"
+                sleep 2
+                ;;
+            2)
+                echo ""
+                systemctl stop "$service"
+                echo -e "${YELLOW}Service stopped${NC}"
+                sleep 2
+                ;;
+            3)
+                echo ""
+                systemctl restart "$service"
+                echo -e "${GREEN}Service restarted${NC}"
+                sleep 2
+                ;;
+            4)
+                echo ""
+                systemctl status "$service"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# Function to enable/disable services at boot
+manage_boot() {
+    print_header
+    echo -e "${YELLOW}Manage Services at Boot${NC}"
+    echo ""
+    echo "1. Enable all services at boot"
+    echo "2. Disable all services at boot"
+    echo "3. Show boot status"
+    echo "0. Back to main menu"
+    echo ""
+    read -p "Select option: " boot_option
+
+    case $boot_option in
+        1)
+            echo ""
+            for service in "${PROXMOX_SERVICES[@]}"; do
+                echo -n "Enabling $service... "
+                if systemctl enable "$service" 2>/dev/null; then
+                    echo -e "${GREEN}OK${NC}"
+                else
+                    echo -e "${RED}FAILED${NC}"
+                fi
+            done
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        2)
+            echo ""
+            for service in "${PROXMOX_SERVICES[@]}"; do
+                echo -n "Disabling $service... "
+                if systemctl disable "$service" 2>/dev/null; then
+                    echo -e "${GREEN}OK${NC}"
+                else
+                    echo -e "${RED}FAILED${NC}"
+                fi
+            done
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        3)
+            echo ""
+            for service in "${PROXMOX_SERVICES[@]}"; do
+                if systemctl is-enabled --quiet "$service" 2>/dev/null; then
+                    echo -e "$service: ${GREEN}ENABLED${NC}"
+                else
+                    echo -e "$service: ${RED}DISABLED${NC}"
+                fi
+            done
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        0)
+            return
+            ;;
+        *)
+            echo -e "${RED}Invalid selection${NC}"
+            sleep 1
+            ;;
+    esac
+}
+
+# Troubleshooting menu
+troubleshooting_menu() {
+    while true; do
+        print_header
+        echo -e "${YELLOW}Troubleshooting & Diagnostics${NC}"
+        echo ""
+        echo -e "${BLUE}=== Service Management ===${NC}"
+        echo "1.  Check all services status"
+        echo "2.  Start all services"
+        echo "3.  Stop all services"
+        echo "4.  Restart all services"
+        echo "5.  Manage individual service"
+        echo "6.  Manage services at boot"
+        echo ""
+        echo -e "${BLUE}=== System Diagnostics ===${NC}"
+        echo "7.  System resource check (CPU/RAM/Disk)"
+        echo "8.  View recent service errors"
+        echo "9.  Check cluster status"
+        echo "10. Check storage status"
+        echo "11. Check network connectivity"
+        echo "12. View system logs (last 50 lines)"
+        echo "13. Check Proxmox version"
+        echo "14. Test cluster quorum"
+        echo "15. Check failed services"
+        echo "16. View journal for Proxmox services"
+        echo "17. Check VM/Container status"
+        echo "18. Generate full diagnostic report"
+        echo ""
+        echo "0.  Back to main menu"
+        echo ""
+        read -p "Select option: " ts_option
+
+        case $ts_option in
+            1)
+                check_status
+                ;;
+            2)
+                start_services
+                ;;
+            3)
+                stop_services
+                ;;
+            4)
+                restart_services
+                ;;
+            5)
+                manage_individual
+                ;;
+            6)
+                manage_boot
+                ;;
+            7)
+                check_system_resources
+                ;;
+            8)
+                view_service_errors
+                ;;
+            9)
+                check_cluster_status
+                ;;
+            10)
+                check_storage_status
+                ;;
+            11)
+                check_network
+                ;;
+            12)
+                view_system_logs
+                ;;
+            13)
+                check_proxmox_version
+                ;;
+            14)
+                test_cluster_quorum
+                ;;
+            15)
+                check_failed_services
+                ;;
+            16)
+                view_service_journal
+                ;;
+            17)
+                check_vm_container_status
+                ;;
+            18)
+                generate_diagnostic_report
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# Function to check system resources
+check_system_resources() {
+    print_header
+    echo -e "${YELLOW}System Resource Check${NC}"
+    echo ""
+
+    echo -e "${BLUE}=== CPU Information ===${NC}"
+    echo -n "CPU Usage: "
+    cpu_usage=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1"%"}')
+    echo -e "${GREEN}$cpu_usage${NC}"
+    echo -n "Load Average: "
+    uptime | awk -F'load average:' '{print $2}'
+    echo ""
+
+    echo -e "${BLUE}=== Memory Information ===${NC}"
+    free -h
+    echo ""
+
+    echo -e "${BLUE}=== Disk Usage ===${NC}"
+    df -h | grep -E '^/dev/|Filesystem'
+    echo ""
+
+    echo -e "${BLUE}=== Top 5 Processes by Memory ===${NC}"
+    ps aux --sort=-%mem | head -6
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to view service errors
+view_service_errors() {
+    print_header
+    echo -e "${YELLOW}Recent Service Errors${NC}"
+    echo ""
+
+    for service in "${PROXMOX_SERVICES[@]}"; do
+        echo -e "${BLUE}=== $service ===${NC}"
+        if systemctl is-failed --quiet "$service"; then
+            echo -e "Status: ${RED}FAILED${NC}"
+            systemctl status "$service" --no-pager -l | tail -10
+        else
+            errors=$(journalctl -u "$service" -p err -n 5 --no-pager 2>/dev/null)
+            if [ -n "$errors" ]; then
+                echo "$errors"
+            else
+                echo -e "${GREEN}No recent errors${NC}"
+            fi
+        fi
+        echo ""
+    done
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to check cluster status
+check_cluster_status() {
+    print_header
+    echo -e "${YELLOW}Cluster Status${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = false ]; then
+        echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║     STANDALONE MODE DETECTED          ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${YELLOW}This node is running in standalone mode.${NC}"
+        echo -e "No cluster configuration detected."
+        echo ""
+        echo -e "${BLUE}Node Information:${NC}"
+        echo -e "  Node Name: ${GREEN}$NODE_NAME${NC}"
+        echo -e "  Cluster Services: ${YELLOW}Not Applicable${NC}"
+        echo ""
+    else
+        echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║       CLUSTER MODE DETECTED           ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+        echo ""
+
+        if command -v pvecm &> /dev/null; then
+            echo -e "${BLUE}=== Cluster Information ===${NC}"
+            pvecm status 2>/dev/null
+            echo ""
+
+            echo -e "${BLUE}=== Cluster Nodes ===${NC}"
+            pvecm nodes 2>/dev/null
+            echo ""
+        else
+            echo -e "${RED}pvecm command not found${NC}"
+        fi
+
+        echo -e "${BLUE}=== Corosync Status ===${NC}"
+        systemctl status corosync --no-pager | head -15
+        echo ""
+    fi
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to check storage status
+check_storage_status() {
+    print_header
+    echo -e "${YELLOW}Storage Status${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster - Showing all cluster storages${NC}"
+        echo ""
+    else
+        echo -e "${CYAN}Mode: Standalone - Showing local storages only${NC}"
+        echo ""
+    fi
+
+    if command -v pvesm &> /dev/null; then
+        echo -e "${BLUE}=== Proxmox Storage Status ===${NC}"
+        pvesm status
+        echo ""
+
+        if [ "$IS_CLUSTER" = true ]; then
+            echo -e "${BLUE}=== Shared Storage (Cluster) ===${NC}"
+            pvesm status | grep -E "active|shared" | grep "yes" || echo "No shared storage configured"
+            echo ""
+        fi
+    else
+        echo -e "${RED}pvesm command not found${NC}"
+    fi
+
+    echo -e "${BLUE}=== ZFS Pools (if available) ===${NC}"
+    if command -v zpool &> /dev/null; then
+        zpool_output=$(zpool list 2>/dev/null)
+        if [ -n "$zpool_output" ]; then
+            echo "$zpool_output"
+            echo ""
+            echo -e "${BLUE}=== ZFS Pool Health ===${NC}"
+            zpool status 2>/dev/null
+        else
+            echo "No ZFS pools found"
+        fi
+    else
+        echo "ZFS not installed"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== LVM Information ===${NC}"
+    pvs_output=$(pvs 2>/dev/null)
+    if [ -n "$pvs_output" ]; then
+        echo "Physical Volumes:"
+        echo "$pvs_output"
+    else
+        echo "No LVM physical volumes found"
+    fi
+    echo ""
+
+    vgs_output=$(vgs 2>/dev/null)
+    if [ -n "$vgs_output" ]; then
+        echo "Volume Groups:"
+        echo "$vgs_output"
+    else
+        echo "No LVM volume groups found"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Local Disk Usage ===${NC}"
+    df -h | grep -E '^/dev/|Filesystem'
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to check network connectivity
+check_network() {
+    print_header
+    echo -e "${YELLOW}Network Connectivity Check${NC}"
+    echo ""
+
+    echo -e "${BLUE}=== Network Interfaces ===${NC}"
+    ip -brief addr
+    echo ""
+
+    echo -e "${BLUE}=== Bridge Information ===${NC}"
+    ip -brief link show type bridge
+    echo ""
+
+    echo -e "${BLUE}=== Network Connectivity Tests ===${NC}"
+    echo -n "Checking DNS (8.8.8.8): "
+    if ping -c 2 8.8.8.8 &>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC}"
+    fi
+
+    echo -n "Checking Internet (google.com): "
+    if ping -c 2 google.com &>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAILED${NC}"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Listening Ports ===${NC}"
+    ss -tlnp | grep -E 'pve|corosync' || echo "No Proxmox services listening"
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to view system logs
+view_system_logs() {
+    print_header
+    echo -e "${YELLOW}System Logs (Last 50 lines)${NC}"
+    echo ""
+
+    echo -e "${BLUE}=== Syslog ===${NC}"
+    tail -50 /var/log/syslog 2>/dev/null || journalctl -n 50 --no-pager
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to check Proxmox version
+check_proxmox_version() {
+    print_header
+    echo -e "${YELLOW}Proxmox Version Information${NC}"
+    echo ""
+
+    if command -v pveversion &> /dev/null; then
+        pveversion -v
+    else
+        echo -e "${RED}pveversion command not found${NC}"
+        echo ""
+        cat /etc/pve/.version 2>/dev/null || echo "Version file not found"
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Kernel Version ===${NC}"
+    uname -a
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to test cluster quorum
+test_cluster_quorum() {
+    print_header
+    echo -e "${YELLOW}Cluster Quorum Test${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = false ]; then
+        echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║     STANDALONE MODE DETECTED          ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${YELLOW}Quorum is not applicable in standalone mode.${NC}"
+        echo -e "This feature is only available when the node is part of a cluster."
+        echo ""
+    else
+        if command -v pvecm &> /dev/null; then
+            echo -e "${BLUE}=== Quorum Status ===${NC}"
+            quorum_info=$(pvecm status | grep -i quorum)
+            echo "$quorum_info"
+
+            # Check if quorate
+            if echo "$quorum_info" | grep -q "Quorate.*Yes"; then
+                echo -e "${GREEN}✓ Cluster has quorum${NC}"
+            else
+                echo -e "${RED}✗ Cluster does NOT have quorum - CRITICAL!${NC}"
+            fi
+            echo ""
+
+            echo -e "${BLUE}=== Expected Votes ===${NC}"
+            pvecm status | grep -i votes
+            echo ""
+
+            echo -e "${BLUE}=== Cluster Members ===${NC}"
+            pvecm status | grep -A 20 "Membership information"
+            echo ""
+        else
+            echo -e "${RED}pvecm command not found${NC}"
+        fi
+    fi
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to check failed services
+check_failed_services() {
+    print_header
+    echo -e "${YELLOW}Checking for Failed Services${NC}"
+    echo ""
+
+    echo -e "${BLUE}=== System-wide Failed Services ===${NC}"
+    failed_services=$(systemctl --failed --no-pager --no-legend)
+    if [ -z "$failed_services" ]; then
+        echo -e "${GREEN}No failed services found${NC}"
+    else
+        systemctl --failed --no-pager
+    fi
+    echo ""
+
+    echo -e "${BLUE}=== Proxmox Service Status ===${NC}"
+    for service in "${PROXMOX_SERVICES[@]}"; do
+        if systemctl is-failed --quiet "$service"; then
+            echo -e "${RED}✗ $service: FAILED${NC}"
+        elif systemctl is-active --quiet "$service"; then
+            echo -e "${GREEN}✓ $service: ACTIVE${NC}"
+        else
+            echo -e "${YELLOW}○ $service: INACTIVE${NC}"
+        fi
+    done
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to view journal for services
+view_service_journal() {
+    print_header
+    echo -e "${YELLOW}Service Journal Logs${NC}"
+    echo ""
+    echo "Select service to view logs:"
+    echo ""
+
+    echo -e "${BLUE}=== Base Services ===${NC}"
+    local counter=1
+    for i in "${!BASE_SERVICES[@]}"; do
+        echo "$counter. ${BASE_SERVICES[$i]}"
+        ((counter++))
+    done
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo ""
+        echo -e "${BLUE}=== Cluster Services ===${NC}"
+        for i in "${!CLUSTER_SERVICES[@]}"; do
+            echo "$counter. ${CLUSTER_SERVICES[$i]}"
+            ((counter++))
+        done
+    fi
+
+    echo ""
+    echo "0. Back"
+    echo ""
+    read -p "Select service: " service_num
+
+    if [ "$service_num" = "0" ]; then
+        return
+    fi
+
+    local selected_service=""
+
+    # Determine which service was selected
+    if [ "$service_num" -ge 1 ] && [ "$service_num" -le "${#BASE_SERVICES[@]}" ]; then
+        selected_service="${BASE_SERVICES[$((service_num-1))]}"
+    elif [ "$IS_CLUSTER" = true ] && [ "$service_num" -gt "${#BASE_SERVICES[@]}" ] && [ "$service_num" -lt "$counter" ]; then
+        cluster_idx=$((service_num - ${#BASE_SERVICES[@]} - 1))
+        selected_service="${CLUSTER_SERVICES[$cluster_idx]}"
+    fi
+
+    if [ -n "$selected_service" ]; then
+        print_header
+        echo -e "${YELLOW}Journal for $selected_service (Last 100 lines)${NC}"
+        echo ""
+        journalctl -u "$selected_service" -n 100 --no-pager
+        echo ""
+        read -p "Press Enter to continue..."
+    else
+        echo -e "${RED}Invalid selection${NC}"
+        sleep 1
+    fi
+}
+
+# Function to check VM/Container status
+check_vm_container_status() {
+    print_header
+    echo -e "${YELLOW}VM and Container Status${NC}"
+    echo ""
+
+    if [ "$IS_CLUSTER" = true ]; then
+        echo -e "${CYAN}Mode: Cluster - Showing VMs/Containers across all nodes${NC}"
+        echo ""
+
+        # Show cluster-wide resources
+        if command -v pvesh &> /dev/null; then
+            echo -e "${BLUE}=== Cluster Resources ===${NC}"
+            pvesh get /cluster/resources --type vm 2>/dev/null | head -50 || echo "Unable to fetch cluster resources"
+            echo ""
+        fi
+    else
+        echo -e "${CYAN}Mode: Standalone - Showing local VMs/Containers only${NC}"
+        echo ""
+    fi
+
+    if command -v qm &> /dev/null; then
+        if [ "$IS_CLUSTER" = true ]; then
+            echo -e "${BLUE}=== Virtual Machines (This Node: $NODE_NAME) ===${NC}"
+        else
+            echo -e "${BLUE}=== Virtual Machines ===${NC}"
+        fi
+
+        vm_list=$(qm list 2>/dev/null)
+        if [ -n "$vm_list" ]; then
+            echo "$vm_list"
+            echo ""
+
+            # Count VMs
+            vm_count=$(echo "$vm_list" | tail -n +2 | wc -l)
+            echo -e "${GREEN}Total VMs on this node: $vm_count${NC}"
+        else
+            echo "No VMs found"
+        fi
+        echo ""
+    fi
+
+    if command -v pct &> /dev/null; then
+        if [ "$IS_CLUSTER" = true ]; then
+            echo -e "${BLUE}=== Containers (This Node: $NODE_NAME) ===${NC}"
+        else
+            echo -e "${BLUE}=== Containers ===${NC}"
+        fi
+
+        ct_list=$(pct list 2>/dev/null)
+        if [ -n "$ct_list" ]; then
+            echo "$ct_list"
+            echo ""
+
+            # Count containers
+            ct_count=$(echo "$ct_list" | tail -n +2 | wc -l)
+            echo -e "${GREEN}Total Containers on this node: $ct_count${NC}"
+        else
+            echo "No containers found"
+        fi
+        echo ""
+    fi
+
+    read -p "Press Enter to continue..."
+}
+
+# Function to generate diagnostic report
+generate_diagnostic_report() {
+    print_header
+    echo -e "${YELLOW}Generating Diagnostic Report${NC}"
+    echo ""
+
+    report_file="/tmp/proxmox-diagnostic-$(date +%Y%m%d-%H%M%S).txt"
+
+    echo "Generating comprehensive diagnostic report..."
+    echo "This may take a moment..."
+    echo ""
+
+    {
+        echo "========================================="
+        echo "Proxmox Diagnostic Report"
+        echo "Generated: $(date)"
+        echo "Node: $NODE_NAME"
+        if [ "$IS_CLUSTER" = true ]; then
+            echo "Mode: CLUSTER"
+            echo "Cluster Name: $CLUSTER_NAME"
+        else
+            echo "Mode: STANDALONE"
+        fi
+        echo "========================================="
+        echo ""
+
+        echo "=== SYSTEM INFORMATION ==="
+        uname -a
+        echo ""
+
+        echo "=== PROXMOX VERSION ==="
+        pveversion -v 2>/dev/null || echo "Unable to get version"
+        echo ""
+
+        echo "=== BASE SERVICE STATUS ==="
+        for service in "${BASE_SERVICES[@]}"; do
+            echo "--- $service ---"
+            systemctl status "$service" --no-pager
+            echo ""
+        done
+
+        if [ "$IS_CLUSTER" = true ]; then
+            echo "=== CLUSTER SERVICE STATUS ==="
+            for service in "${CLUSTER_SERVICES[@]}"; do
+                echo "--- $service ---"
+                systemctl status "$service" --no-pager
+                echo ""
+            done
+        fi
+
+        echo "=== CLUSTER STATUS ==="
+        if [ "$IS_CLUSTER" = true ]; then
+            pvecm status 2>/dev/null || echo "Unable to get cluster status"
+        else
+            echo "Not in cluster mode - Standalone node"
+        fi
+        echo ""
+
+        echo "=== STORAGE STATUS ==="
+        pvesm status 2>/dev/null || echo "Unable to get storage status"
+        echo ""
+
+        if [ "$IS_CLUSTER" = true ]; then
+            echo "=== VM/CONTAINER STATUS (Cluster-wide) ==="
+            pvesh get /cluster/resources --type vm 2>/dev/null || echo "Unable to get cluster resources"
+            echo ""
+        fi
+
+        echo "=== VM/CONTAINER STATUS (This Node) ==="
+        echo "VMs:"
+        qm list 2>/dev/null || echo "No VMs or unable to query"
+        echo ""
+        echo "Containers:"
+        pct list 2>/dev/null || echo "No containers or unable to query"
+        echo ""
+
+        echo "=== NETWORK INTERFACES ==="
+        ip addr
+        echo ""
+
+        echo "=== DISK USAGE ==="
+        df -h
+        echo ""
+
+        echo "=== MEMORY USAGE ==="
+        free -h
+        echo ""
+
+        echo "=== FAILED SERVICES ==="
+        systemctl --failed --no-pager
+        echo ""
+
+        echo "=== RECENT ERRORS ==="
+        journalctl -p err -n 50 --no-pager
+        echo ""
+
+    } > "$report_file"
+
+    echo -e "${GREEN}Report generated successfully!${NC}"
+    echo -e "Location: ${BLUE}$report_file${NC}"
+    echo ""
+    echo "You can view it with: cat $report_file"
+    echo "Or copy it: cp $report_file /path/to/destination"
+    echo ""
+
+    read -p "Press Enter to continue..."
+}
+
+# Main menu
+main_menu() {
+    while true; do
+        print_header
+        echo "1. Troubleshooting & Diagnostics"
+        echo "0. Exit"
+        echo ""
+        read -p "Select an option: " choice
+
+        case $choice in
+            1)
+                troubleshooting_menu
+                ;;
+            0)
+                print_header
+                echo -e "${GREEN}Thank you for using Proxmox Master Script!${NC}"
+                echo ""
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid option. Please try again.${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# Main execution
+check_root
+detect_cluster
+main_menu
