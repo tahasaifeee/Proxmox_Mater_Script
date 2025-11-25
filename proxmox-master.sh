@@ -1208,7 +1208,10 @@ download_distro_image() {
     echo "" >&2
 
     # Download with better error handling
-    if wget --show-progress -O "$dest_file" "$url" 2>&1 | tee /dev/stderr; then
+    wget --show-progress -O "$dest_file" "$url" 2>&1 >&2
+    local wget_status=$?
+
+    if [ $wget_status -eq 0 ]; then
         # Verify file exists and has content
         if [ -f "$dest_file" ] && [ -s "$dest_file" ]; then
             local file_size=$(stat -f%z "$dest_file" 2>/dev/null || stat -c%s "$dest_file" 2>/dev/null)
