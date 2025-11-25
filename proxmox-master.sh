@@ -1105,7 +1105,7 @@ generate_diagnostic_report() {
 
 # Global template variables
 TEMPLATE_DIR="/var/lib/vz/template/iso"
-TEMPLATE_DOWNLOAD_DIR="/tmp/proxmox-templates"
+TEMPLATE_DOWNLOAD_DIR="$(pwd)/proxmox-templates"
 
 # Function to ensure required packages are installed
 check_template_requirements() {
@@ -1195,40 +1195,42 @@ download_distro_image() {
 
     # Check if file already exists
     if [ -f "$dest_file" ]; then
-        echo -e "${YELLOW}Image already downloaded: $filename${NC}"
-        read -p "Re-download? (y/n): " redownload
+        echo -e "${YELLOW}Image already downloaded: $filename${NC}" >&2
+        read -p "Re-download? (y/n): " redownload >&2
         if [ "$redownload" != "y" ]; then
             echo "$dest_file"
             return 0
         fi
     fi
 
-    echo -e "${CYAN}Downloading $filename...${NC}"
-    echo -e "${BLUE}URL: $url${NC}"
-    echo ""
+    echo -e "${CYAN}Downloading $filename...${NC}" >&2
+    echo -e "${BLUE}URL: $url${NC}" >&2
+    echo "" >&2
 
     # Download with better error handling
-    if wget --show-progress -O "$dest_file" "$url" 2>&1; then
+    if wget --show-progress -O "$dest_file" "$url" 2>&1 | tee /dev/stderr; then
         # Verify file exists and has content
         if [ -f "$dest_file" ] && [ -s "$dest_file" ]; then
             local file_size=$(stat -f%z "$dest_file" 2>/dev/null || stat -c%s "$dest_file" 2>/dev/null)
-            echo ""
-            echo -e "${GREEN}✓ Download completed!${NC}"
-            echo -e "${CYAN}File: $dest_file${NC}"
-            echo -e "${CYAN}Size: $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "$file_size bytes")${NC}"
+            echo "" >&2
+            echo -e "${GREEN}✓ Download completed!${NC}" >&2
+            echo -e "${CYAN}File: $dest_file${NC}" >&2
+            echo -e "${CYAN}Size: $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "$file_size bytes")${NC}" >&2
+            echo "" >&2
 
             # Make sure file is readable
             chmod 644 "$dest_file"
 
+            # Output only the file path to stdout for capture
             echo "$dest_file"
             return 0
         else
-            echo -e "${RED}✗ Download failed - file is empty or missing${NC}"
+            echo -e "${RED}✗ Download failed - file is empty or missing${NC}" >&2
             rm -f "$dest_file"
             return 1
         fi
     else
-        echo -e "${RED}✗ Download failed!${NC}"
+        echo -e "${RED}✗ Download failed!${NC}" >&2
         rm -f "$dest_file"
         return 1
     fi
@@ -1237,7 +1239,7 @@ download_distro_image() {
 # Function to get template configuration from user
 get_template_config() {
     print_header
-    echo -e "${YELLOW}Template Configuration${NC}"
+    echo -e "${YELLOW}Step 2: Template Configuration${NC}"
     echo ""
 
     # VM ID
@@ -1388,10 +1390,6 @@ create_vm_from_image() {
 customize_vm() {
     local vmid=$1
     local distro=$2
-
-    print_header
-    echo -e "${YELLOW}Customizing VM ${vmid}${NC}"
-    echo ""
 
     # Create a temporary script for customization
     local customize_script="/tmp/customize-${vmid}.sh"
@@ -1544,10 +1542,6 @@ CUSTOMIZE_EOF
 convert_to_template() {
     local vmid=$1
 
-    print_header
-    echo -e "${YELLOW}Converting VM ${vmid} to Template${NC}"
-    echo ""
-
     read -p "Convert this VM to a template? (yes/no): " confirm
 
     if [ "$confirm" = "yes" ]; then
@@ -1591,7 +1585,7 @@ create_template_workflow() {
 
     # Download image
     print_header
-    echo -e "${YELLOW}Downloading ${distro} Image${NC}"
+    echo -e "${YELLOW}Step 1: Downloading ${distro} Image${NC}"
     echo ""
 
     local image_file=$(download_distro_image "$distro")
@@ -1613,10 +1607,10 @@ create_template_workflow() {
         return 1
     fi
 
-    echo ""
     echo -e "${GREEN}✓ Image ready for template creation${NC}"
-    sleep 2
     echo ""
+    echo -e "${CYAN}Proceeding to configuration...${NC}"
+    sleep 2
 
     # Get configuration
     if ! get_template_config; then
@@ -1625,7 +1619,7 @@ create_template_workflow() {
 
     # Show configuration summary
     print_header
-    echo -e "${YELLOW}Template Configuration Summary${NC}"
+    echo -e "${YELLOW}Step 3: Configuration Summary${NC}"
     echo ""
     echo -e "VM ID: ${CYAN}${TMPL_VMID}${NC}"
     echo -e "Name: ${CYAN}${TMPL_NAME}${NC}"
@@ -1649,6 +1643,9 @@ create_template_workflow() {
 
     # Create VM from image
     print_header
+    echo -e "${YELLOW}Step 4: Creating VM from Image${NC}"
+    echo ""
+
     if ! create_vm_from_image "$image_file" "$TMPL_VMID" "$TMPL_NAME"; then
         echo -e "${RED}Failed to create VM from image${NC}"
         read -p "Press Enter to continue..."
@@ -1656,11 +1653,18 @@ create_template_workflow() {
     fi
 
     echo ""
+    read -p "Press Enter to continue to customization..."
 
     # Customize VM
+    print_header
+    echo -e "${YELLOW}Step 5: Customizing VM ${TMPL_VMID}${NC}"
+    echo ""
     customize_vm "$TMPL_VMID" "$distro"
 
     # Convert to template
+    print_header
+    echo -e "${YELLOW}Step 6: Converting to Template${NC}"
+    echo ""
     convert_to_template "$TMPL_VMID"
 }
 
