@@ -53,6 +53,7 @@ Main Menu
     ├── AlmaLinux (9, 8)
     ├── Rocky Linux (9, 8)
     ├── CentOS Stream 9
+    ├── Oracle Linux (9, 8)
     └── Fedora 39
 ```
 
@@ -149,6 +150,7 @@ The VM Template Creator is a powerful feature that automates the creation of sta
 - **AlmaLinux 9 & 8** - RHEL-compatible enterprise Linux
 - **Rocky Linux 9 & 8** - Community-driven enterprise Linux
 - **CentOS Stream 9** - Rolling-release RHEL preview
+- **Oracle Linux 9 & 8** - Enterprise-grade Linux from Oracle
 
 #### Fedora
 - **Fedora 39** - Cutting-edge features and packages
@@ -175,16 +177,41 @@ The VM Template Creator is a powerful feature that automates the creation of sta
 - Custom SSH port (default: 22)
 - Root password configuration
 - Enable/disable root login with password
-- Password authentication setup
+- Password authentication via dedicated SSH config file
+- Creates `/etc/ssh/sshd_config.d/50-cloud-init-password-auth.conf` for clean configuration management
+- Fallback configuration for older systems without `sshd_config.d` support
 
 **System Configuration:**
 - QEMU Guest Agent installation (recommended)
 - Cloud-init integration
 - Automatic package updates during setup
 
+#### SSH Password Authentication Configuration
+
+The template creator implements a robust SSH configuration system to ensure password authentication is properly enabled across all distributions:
+
+**Primary Method:**
+- Creates a dedicated SSH config file: `/etc/ssh/sshd_config.d/50-cloud-init-password-auth.conf`
+- Explicitly sets `PasswordAuthentication yes`, `PermitRootLogin yes`, and `PubkeyAuthentication yes`
+- Ensures main `sshd_config` includes files from `sshd_config.d` directory
+- Custom SSH port (if specified) is configured in the separate config file
+
+**Fallback Method:**
+- For older systems without `sshd_config.d` support
+- Directly modifies main `/etc/ssh/sshd_config` file
+- Ensures compatibility across all distribution versions
+
+**Benefits:**
+- ✅ Clean separation of cloud-init managed configuration
+- ✅ Easy to identify and modify template SSH settings
+- ✅ Works on Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS Stream, Oracle Linux, and Fedora
+- ✅ Password authentication guaranteed to be enabled on first boot
+- ✅ Both password and key-based authentication supported
+- ✅ Compatible with modern and legacy SSH configurations
+
 #### Template Creation Workflow
 
-1. **Select Distribution**: Choose from 11+ supported Linux distributions
+1. **Select Distribution**: Choose from 13 supported Linux distributions
 2. **Download Image**: Automatically downloads official cloud image
 3. **Configure Template**: Set VM specifications and security options
 4. **Create VM**: Builds VM from cloud image with your specifications
@@ -220,8 +247,11 @@ The script automatically installs required packages:
 
 ### Storage Considerations
 
-**local-lvm**: Basic cloud-init configuration (SSH port changes require manual setup)
-**Other storage types**: Full customization support with virt-customize
+All storage types are fully supported with comprehensive cloud-init customization:
+- **Automatic Storage Detection**: Script detects compatible storage and shows type, available space, and usage
+- **Network Bridge Detection**: Automatically lists available network bridges with IPs
+- **Full Customization Support**: Works on all storage types including local-lvm, NFS, Ceph, ZFS, etc.
+- **Cloud-init Based**: Uses proper cloud-init configuration for all customizations, ensuring compatibility across all distributions
 
 ### Example Use Cases
 
@@ -541,6 +571,17 @@ For issues or questions:
 
 ## Changelog
 
+### Version 3.1 - Enhanced Template Creator
+- ✨ **NEW**: Oracle Linux 9 and 8 support (official Oracle cloud images)
+- ✨ **NEW**: Automatic storage detection showing compatible storage with type, size, and usage
+- ✨ **NEW**: Automatic network bridge detection with IP information
+- ✨ **NEW**: Dedicated SSH configuration file (`/etc/ssh/sshd_config.d/50-cloud-init-password-auth.conf`)
+- 🔧 **IMPROVED**: SSH password authentication now uses separate config file for cleaner management
+- 🔧 **IMPROVED**: Password authentication explicitly enabled with fallback for older systems
+- 🔧 **IMPROVED**: All customizations work on all storage types via cloud-init (including local-lvm)
+- 🐛 **FIXED**: Template creation workflow now continues properly after image download
+- 📚 **DOCS**: Enhanced documentation for SSH configuration and storage support
+
 ### Version 3.0 - Template Creator Release
 - ✨ **NEW**: VM Template Creator with multi-distro support
 - ✨ **NEW**: Support for 11+ Linux distributions (Ubuntu, Debian, AlmaLinux, Rocky, CentOS, Fedora)
@@ -574,6 +615,7 @@ For issues or questions:
 
 ---
 
-**Current Version**: 3.0 (Template Creator)
+**Current Version**: 3.1 (Enhanced Template Creator)
 **Last Updated**: 2025
 **Compatible with**: Proxmox VE 7.x and 8.x (Standalone and Cluster)
+**Total Distributions Supported**: 13 (Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS Stream, Oracle Linux, Fedora)
