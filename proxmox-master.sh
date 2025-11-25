@@ -1132,6 +1132,105 @@ get_next_vmid() {
     echo "$vmid"
 }
 
+# Function to get available storage for VM disks
+get_available_storage() {
+    echo -e "${CYAN}Available Storage:${NC}"
+    echo ""
+
+    # Get storage list that supports VM images/containers
+    local storage_list=$(pvesm status -content images 2>/dev/null | tail -n +2 | awk '{print $1}')
+
+    if [ -z "$storage_list" ]; then
+        echo -e "${RED}No compatible storage found!${NC}"
+        return 1
+    fi
+
+    local counter=1
+    local -a storage_array
+
+    # Display storage options
+    while IFS= read -r storage; do
+        if [ -n "$storage" ]; then
+            # Get storage details
+            local storage_info=$(pvesm status -storage "$storage" 2>/dev/null | tail -n +2)
+            local storage_type=$(echo "$storage_info" | awk '{print $2}')
+            local storage_avail=$(echo "$storage_info" | awk '{print $4}')
+            local storage_used=$(echo "$storage_info" | awk '{print $5}')
+
+            storage_array+=("$storage")
+
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$storage${NC}"
+            echo -e "   Type: ${CYAN}$storage_type${NC} | Available: ${YELLOW}$storage_avail${NC} | Used: ${YELLOW}$storage_used%${NC}"
+            echo ""
+            ((counter++))
+        fi
+    done <<< "$storage_list"
+
+    # Let user select
+    read -p "Select storage number [1]: " storage_choice
+    storage_choice=${storage_choice:-1}
+
+    # Validate selection
+    if [ "$storage_choice" -ge 1 ] && [ "$storage_choice" -lt "$counter" ]; then
+        echo "${storage_array[$((storage_choice-1))]}"
+        return 0
+    else
+        echo -e "${RED}Invalid selection${NC}" >&2
+        return 1
+    fi
+}
+
+# Function to get available network bridges
+get_available_bridges() {
+    echo -e "${CYAN}Available Network Bridges:${NC}"
+    echo ""
+
+    # Get list of bridges
+    local bridge_list=$(ip -brief link show type bridge 2>/dev/null | awk '{print $1}')
+
+    if [ -z "$bridge_list" ]; then
+        # Fallback: check all vmbr interfaces
+        bridge_list=$(ip -brief addr | grep -E '^vmbr' | awk '{print $1}')
+    fi
+
+    if [ -z "$bridge_list" ]; then
+        echo -e "${YELLOW}No bridges found${NC}"
+        return 1
+    fi
+
+    local counter=1
+    local -a bridge_array
+
+    # Display bridge options
+    while IFS= read -r bridge; do
+        if [ -n "$bridge" ]; then
+            # Get bridge IP if available
+            local bridge_ip=$(ip -brief addr show "$bridge" 2>/dev/null | awk '{print $3}')
+            [ -z "$bridge_ip" ] && bridge_ip="No IP"
+
+            bridge_array+=("$bridge")
+
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$bridge${NC} - IP: ${CYAN}$bridge_ip${NC}"
+            ((counter++))
+        fi
+    done <<< "$bridge_list"
+
+    echo ""
+
+    # Let user select
+    read -p "Select bridge number [1]: " bridge_choice
+    bridge_choice=${bridge_choice:-1}
+
+    # Validate selection
+    if [ "$bridge_choice" -ge 1 ] && [ "$bridge_choice" -lt "$counter" ]; then
+        echo "${bridge_array[$((bridge_choice-1))]}"
+        return 0
+    else
+        echo -e "${RED}Invalid selection${NC}" >&2
+        return 1
+    fi
+}
+
 # Function to download distro images
 download_distro_image() {
     local distro=$1
@@ -1267,12 +1366,24 @@ get_template_config() {
     disk_size=${disk_size:-20G}
 
     # Storage location
-    read -p "Enter storage location [local-lvm]: " storage
-    storage=${storage:-local-lvm}
+    echo ""
+    echo -e "${BLUE}Select Storage Location:${NC}"
+    local storage=$(get_available_storage)
+    if [ $? -ne 0 ] || [ -z "$storage" ]; then
+        echo -e "${YELLOW}Falling back to manual entry...${NC}"
+        read -p "Enter storage location [local-lvm]: " storage
+        storage=${storage:-local-lvm}
+    fi
 
     # Network bridge
-    read -p "Enter network bridge [vmbr0]: " bridge
-    bridge=${bridge:-vmbr0}
+    echo -e "${BLUE}Select Network Bridge:${NC}"
+    local bridge=$(get_available_bridges)
+    if [ $? -ne 0 ] || [ -z "$bridge" ]; then
+        echo -e "${YELLOW}Falling back to manual entry...${NC}"
+        read -p "Enter network bridge [vmbr0]: " bridge
+        bridge=${bridge:-vmbr0}
+    fi
+    echo ""
 
     # SSH Port
     read -p "Enter SSH port [22]: " ssh_port
@@ -1394,150 +1505,118 @@ customize_vm() {
     local vmid=$1
     local distro=$2
 
-    # Create a temporary script for customization
-    local customize_script="/tmp/customize-${vmid}.sh"
-
-    # Detect package manager based on distro
-    local pkg_manager=""
-    local agent_package=""
-
-    if [[ "$distro" =~ ubuntu|debian ]]; then
-        pkg_manager="apt-get"
-        agent_package="qemu-guest-agent"
-    elif [[ "$distro" =~ alma|rocky|centos|fedora ]]; then
-        pkg_manager="dnf"
-        agent_package="qemu-guest-agent"
-    fi
-
-    cat > "$customize_script" <<'CUSTOMIZE_EOF'
-#!/bin/bash
-
-# Update system
-echo "Updating system packages..."
-CUSTOMIZE_EOF
-
-    if [[ "$distro" =~ ubuntu|debian ]]; then
-        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get upgrade -y
-CUSTOMIZE_EOF
-    else
-        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
-dnf update -y
-CUSTOMIZE_EOF
-    fi
-
-    # Install qemu-guest-agent
-    if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
-        cat >> "$customize_script" <<CUSTOMIZE_EOF
-
-# Install QEMU Guest Agent
-echo "Installing QEMU Guest Agent..."
-${pkg_manager} install -y ${agent_package}
-systemctl enable qemu-guest-agent
-systemctl start qemu-guest-agent
-CUSTOMIZE_EOF
-    fi
-
-    # Configure SSH
-    cat >> "$customize_script" <<CUSTOMIZE_EOF
-
-# Configure SSH
-echo "Configuring SSH..."
-sed -i 's/#Port 22/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
-sed -i 's/Port 22/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
-CUSTOMIZE_EOF
-
-    # Enable root login
-    if [ "$TMPL_ENABLE_ROOT" = "y" ]; then
-        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
-sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-sed -i 's/PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config
-CUSTOMIZE_EOF
-    fi
-
-    # Set root password
-    cat >> "$customize_script" <<CUSTOMIZE_EOF
-
-# Set root password
-echo "Setting root password..."
-echo "root:${TMPL_ROOT_PASSWORD}" | chpasswd
-
-# Enable password authentication
-sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-CUSTOMIZE_EOF
-
-    # Restart SSH
-    cat >> "$customize_script" <<'CUSTOMIZE_EOF'
-
-# Restart SSH service
-if systemctl list-units --type=service | grep -q ssh.service; then
-    systemctl restart ssh
-elif systemctl list-units --type=service | grep -q sshd.service; then
-    systemctl restart sshd
-fi
-
-echo "Customization completed!"
-CUSTOMIZE_EOF
-
-    chmod +x "$customize_script"
-
-    # Use virt-customize to modify the image
     echo -e "${CYAN}Applying customizations...${NC}"
     echo "This may take a few minutes..."
     echo ""
 
-    # Get the disk path
-    local disk_path=$(qm config "$vmid" | grep scsi0 | awk '{print $2}')
-    local storage_name=$(echo "$disk_path" | cut -d: -f1)
-    local disk_volume=$(echo "$disk_path" | cut -d: -f2)
+    # Detect package manager based on distro
+    local pkg_manager=""
+    local agent_package="qemu-guest-agent"
 
-    # For local-lvm, we need to handle it differently
-    if [ "$storage_name" = "local-lvm" ]; then
-        echo -e "${YELLOW}Note: Customization with local-lvm requires converting to qcow2 format${NC}"
-        echo -e "${YELLOW}Using cloud-init for basic configuration instead...${NC}"
-        echo ""
+    if [[ "$distro" =~ ubuntu|debian ]]; then
+        pkg_manager="apt-get"
+    elif [[ "$distro" =~ alma|rocky|centos|fedora ]]; then
+        pkg_manager="dnf"
+    fi
 
-        # Use cloud-init for basic setup
-        qm set "$vmid" --ciuser root
-        qm set "$vmid" --cipassword "$TMPL_ROOT_PASSWORD"
-        qm set "$vmid" --ipconfig0 ip=dhcp
+    # Create cloud-init user-data configuration
+    local cloudinit_file="/tmp/user-data-${vmid}.yml"
 
-        echo -e "${GREEN}✓ Basic cloud-init configuration applied${NC}"
-        echo -e "${YELLOW}Note: SSH port change and some customizations will need manual configuration${NC}"
-    else
-        # For other storage types, use virt-customize
-        local full_disk_path="/dev/${storage_name}/${disk_volume}"
+    cat > "$cloudinit_file" <<EOF
+#cloud-config
+hostname: ${TMPL_NAME}
+manage_etc_hosts: true
 
-        if [ -f "$full_disk_path" ] || [ -b "$full_disk_path" ]; then
-            virt-customize -a "$full_disk_path" \
-                --run "$customize_script" \
-                --root-password "password:${TMPL_ROOT_PASSWORD}" \
-                2>&1 | while IFS= read -r line; do
-                echo "$line"
-            done
+users:
+  - name: root
+    lock_passwd: false
+    shell: /bin/bash
 
-            if [ ${PIPESTATUS[0]} -eq 0 ]; then
-                echo -e "${GREEN}✓ Customization completed successfully${NC}"
-            else
-                echo -e "${RED}✗ Some customizations may have failed${NC}"
-                echo -e "${YELLOW}You may need to configure manually after first boot${NC}"
-            fi
+chpasswd:
+  list: |
+    root:${TMPL_ROOT_PASSWORD}
+  expire: False
+
+ssh_pwauth: true
+disable_root: false
+
+runcmd:
+  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+EOF
+
+    # Add SSH port configuration if not default
+    if [ "$TMPL_SSH_PORT" != "22" ]; then
+        cat >> "$cloudinit_file" <<EOF
+  - sed -i 's/^#*Port.*/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
+EOF
+    fi
+
+    # Add qemu-guest-agent installation if requested
+    if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
+        if [[ "$distro" =~ ubuntu|debian ]]; then
+            cat >> "$cloudinit_file" <<EOF
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+EOF
         else
-            echo -e "${YELLOW}Using cloud-init for configuration...${NC}"
-            qm set "$vmid" --ciuser root
-            qm set "$vmid" --cipassword "$TMPL_ROOT_PASSWORD"
-            qm set "$vmid" --ipconfig0 ip=dhcp
-            echo -e "${GREEN}✓ Cloud-init configuration applied${NC}"
+            cat >> "$cloudinit_file" <<EOF
+  - ${pkg_manager} install -y qemu-guest-agent
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+EOF
         fi
     fi
 
-    # Cleanup
-    rm -f "$customize_script"
+    # Restart SSH to apply changes
+    cat >> "$cloudinit_file" <<EOF
+  - systemctl restart sshd || systemctl restart ssh
+
+package_update: true
+package_upgrade: false
+
+power_state:
+  mode: reboot
+  timeout: 300
+  condition: True
+EOF
+
+    echo -e "${CYAN}Configuring cloud-init with custom settings...${NC}"
+
+    # Apply cloud-init configuration
+    qm set "$vmid" --ciuser root
+    qm set "$vmid" --cipassword "$TMPL_ROOT_PASSWORD"
+    qm set "$vmid" --ipconfig0 ip=dhcp
+    qm set "$vmid" --cicustom "user=local:snippets/user-data-${vmid}.yml"
+
+    # Copy cloud-init file to Proxmox snippets directory
+    local snippets_dir="/var/lib/vz/snippets"
+    if [ ! -d "$snippets_dir" ]; then
+        mkdir -p "$snippets_dir"
+    fi
+
+    cp "$cloudinit_file" "${snippets_dir}/user-data-${vmid}.yml"
+
+    # Cleanup temp file
+    rm -f "$cloudinit_file"
 
     echo ""
+    echo -e "${GREEN}✓ Cloud-init configuration applied${NC}"
+    echo ""
+    echo -e "${BLUE}Configuration Summary:${NC}"
+    echo -e "  • Root password: ${GREEN}Set${NC}"
+    echo -e "  • Root login: ${GREEN}Enabled${NC}"
+    echo -e "  • SSH port: ${CYAN}${TMPL_SSH_PORT}${NC}"
+    if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
+        echo -e "  • QEMU Guest Agent: ${GREEN}Will be installed on first boot${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}Note: Changes will be applied on first VM boot${NC}"
+    echo -e "${YELLOW}The VM will automatically reboot after configuration${NC}"
+    echo ""
+
     read -p "Press Enter to continue..."
 }
 
