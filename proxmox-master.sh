@@ -42,8 +42,29 @@ PROXMOX_SERVICES=()
 detect_cluster() {
     if [ -f /etc/pve/corosync.conf ] && [ -f /etc/corosync/corosync.conf ]; then
         IS_CLUSTER=true
-        CLUSTER_NAME=$(pvecm status 2>/dev/null | grep "Cluster name:" | awk '{print $3}')
+
+        # Try multiple methods to get cluster name
+        # Method 1: Parse from corosync.conf file
+        CLUSTER_NAME=$(grep -oP 'cluster_name:\s*\K\S+' /etc/pve/corosync.conf 2>/dev/null)
+
+        # Method 2: Try pvecm status with different patterns
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(pvecm status 2>/dev/null | grep -i "cluster name" | awk -F': ' '{print $2}' | tr -d ' ')
+        fi
+
+        # Method 3: Try alternative pvecm parsing
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(pvecm status 2>/dev/null | awk '/Cluster name:/ {print $3}')
+        fi
+
+        # Method 4: Parse corosync.conf with awk
+        if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME=$(awk '/cluster_name:/ {print $2}' /etc/pve/corosync.conf 2>/dev/null)
+        fi
+
+        # Fallback if all methods fail
         [ -z "$CLUSTER_NAME" ] && CLUSTER_NAME="Unknown"
+
         PROXMOX_SERVICES=("${BASE_SERVICES[@]}" "${CLUSTER_SERVICES[@]}")
     else
         IS_CLUSTER=false
@@ -1078,11 +1099,601 @@ generate_diagnostic_report() {
     read -p "Press Enter to continue..."
 }
 
+#############################################
+# VM TEMPLATE CREATOR SECTION
+#############################################
+
+# Global template variables
+TEMPLATE_DIR="/var/lib/vz/template/iso"
+TEMPLATE_DOWNLOAD_DIR="/tmp/proxmox-templates"
+
+# Function to ensure required packages are installed
+check_template_requirements() {
+    local missing_packages=()
+
+    # Check for required commands
+    command -v wget &>/dev/null || missing_packages+=("wget")
+    command -v libguestfs-tools &>/dev/null || missing_packages+=("libguestfs-tools")
+
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        echo -e "${YELLOW}Installing required packages: ${missing_packages[*]}${NC}"
+        apt-get update -qq
+        apt-get install -y "${missing_packages[@]}"
+        echo ""
+    fi
+}
+
+# Function to get next available VM ID
+get_next_vmid() {
+    local vmid=9000
+    while qm status "$vmid" &>/dev/null; do
+        ((vmid++))
+    done
+    echo "$vmid"
+}
+
+# Function to download distro images
+download_distro_image() {
+    local distro=$1
+    local url=""
+    local filename=""
+
+    mkdir -p "$TEMPLATE_DOWNLOAD_DIR"
+
+    case $distro in
+        "ubuntu-22.04")
+            filename="ubuntu-22.04-cloudimg-amd64.img"
+            url="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+            ;;
+        "ubuntu-20.04")
+            filename="ubuntu-20.04-cloudimg-amd64.img"
+            url="https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
+            ;;
+        "ubuntu-24.04")
+            filename="ubuntu-24.04-cloudimg-amd64.img"
+            url="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+            ;;
+        "debian-12")
+            filename="debian-12-generic-amd64.qcow2"
+            url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+            ;;
+        "debian-11")
+            filename="debian-11-generic-amd64.qcow2"
+            url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2"
+            ;;
+        "almalinux-9")
+            filename="AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+            url="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+            ;;
+        "almalinux-8")
+            filename="AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"
+            url="https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"
+            ;;
+        "rocky-9")
+            filename="Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
+            url="https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
+            ;;
+        "rocky-8")
+            filename="Rocky-8-GenericCloud-Base.latest.x86_64.qcow2"
+            url="https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2"
+            ;;
+        "centos-stream-9")
+            filename="CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
+            url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
+            ;;
+        "fedora-39")
+            filename="Fedora-Cloud-Base-39-latest.x86_64.qcow2"
+            url="https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2"
+            ;;
+        *)
+            echo -e "${RED}Unknown distro: $distro${NC}"
+            return 1
+            ;;
+    esac
+
+    local dest_file="$TEMPLATE_DOWNLOAD_DIR/$filename"
+
+    # Check if file already exists
+    if [ -f "$dest_file" ]; then
+        echo -e "${YELLOW}Image already downloaded: $filename${NC}"
+        read -p "Re-download? (y/n): " redownload
+        if [ "$redownload" != "y" ]; then
+            echo "$dest_file"
+            return 0
+        fi
+    fi
+
+    echo -e "${CYAN}Downloading $filename...${NC}"
+    echo -e "${BLUE}URL: $url${NC}"
+    echo ""
+
+    if wget -q --show-progress -O "$dest_file" "$url"; then
+        echo -e "${GREEN}Download completed!${NC}"
+        echo "$dest_file"
+        return 0
+    else
+        echo -e "${RED}Download failed!${NC}"
+        rm -f "$dest_file"
+        return 1
+    fi
+}
+
+# Function to get template configuration from user
+get_template_config() {
+    print_header
+    echo -e "${YELLOW}Template Configuration${NC}"
+    echo ""
+
+    # VM ID
+    local default_vmid=$(get_next_vmid)
+    read -p "Enter VM ID [$default_vmid]: " vmid
+    vmid=${vmid:-$default_vmid}
+
+    # Template name
+    read -p "Enter template name [template-${distro}]: " template_name
+    template_name=${template_name:-template-${distro}}
+
+    # CPU cores
+    read -p "Enter number of CPU cores [2]: " cpu_cores
+    cpu_cores=${cpu_cores:-2}
+
+    # Memory (MB)
+    read -p "Enter memory size in MB [2048]: " memory
+    memory=${memory:-2048}
+
+    # Disk size
+    read -p "Enter disk size (e.g., 20G) [20G]: " disk_size
+    disk_size=${disk_size:-20G}
+
+    # Storage location
+    read -p "Enter storage location [local-lvm]: " storage
+    storage=${storage:-local-lvm}
+
+    # Network bridge
+    read -p "Enter network bridge [vmbr0]: " bridge
+    bridge=${bridge:-vmbr0}
+
+    # SSH Port
+    read -p "Enter SSH port [22]: " ssh_port
+    ssh_port=${ssh_port:-22}
+
+    # Root password
+    read -sp "Enter root password: " root_password
+    echo ""
+    read -sp "Confirm root password: " root_password_confirm
+    echo ""
+
+    if [ "$root_password" != "$root_password_confirm" ]; then
+        echo -e "${RED}Passwords do not match!${NC}"
+        sleep 2
+        return 1
+    fi
+
+    # Enable root login
+    read -p "Enable root login with password? (y/n) [y]: " enable_root
+    enable_root=${enable_root:-y}
+
+    # Install qemu-guest-agent
+    read -p "Install qemu-guest-agent? (y/n) [y]: " install_agent
+    install_agent=${install_agent:-y}
+
+    # Export variables
+    export TMPL_VMID="$vmid"
+    export TMPL_NAME="$template_name"
+    export TMPL_CPU="$cpu_cores"
+    export TMPL_MEMORY="$memory"
+    export TMPL_DISK_SIZE="$disk_size"
+    export TMPL_STORAGE="$storage"
+    export TMPL_BRIDGE="$bridge"
+    export TMPL_SSH_PORT="$ssh_port"
+    export TMPL_ROOT_PASSWORD="$root_password"
+    export TMPL_ENABLE_ROOT="$enable_root"
+    export TMPL_INSTALL_AGENT="$install_agent"
+
+    return 0
+}
+
+# Function to create VM from cloud image
+create_vm_from_image() {
+    local image_file=$1
+    local vmid=$2
+    local name=$3
+
+    echo -e "${CYAN}Creating VM ${vmid} - ${name}${NC}"
+    echo ""
+
+    # Create VM
+    echo "Creating VM..."
+    qm create "$vmid" \
+        --name "$name" \
+        --memory "$TMPL_MEMORY" \
+        --cores "$TMPL_CPU" \
+        --net0 "virtio,bridge=$TMPL_BRIDGE" \
+        --scsihw virtio-scsi-pci
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to create VM${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ VM created${NC}"
+
+    # Import disk
+    echo "Importing disk image..."
+    qm importdisk "$vmid" "$image_file" "$TMPL_STORAGE" -format qcow2
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to import disk${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ Disk imported${NC}"
+
+    # Attach disk
+    echo "Attaching disk to VM..."
+    qm set "$vmid" --scsi0 "${TMPL_STORAGE}:vm-${vmid}-disk-0"
+    qm set "$vmid" --boot order=scsi0
+    qm set "$vmid" --ide2 "${TMPL_STORAGE}:cloudinit"
+
+    # Add serial console
+    qm set "$vmid" --serial0 socket --vga serial0
+
+    # Enable QEMU guest agent
+    qm set "$vmid" --agent enabled=1
+
+    echo -e "${GREEN}✓ VM configuration completed${NC}"
+
+    return 0
+}
+
+# Function to customize VM
+customize_vm() {
+    local vmid=$1
+    local distro=$2
+
+    print_header
+    echo -e "${YELLOW}Customizing VM ${vmid}${NC}"
+    echo ""
+
+    # Create a temporary script for customization
+    local customize_script="/tmp/customize-${vmid}.sh"
+
+    # Detect package manager based on distro
+    local pkg_manager=""
+    local agent_package=""
+
+    if [[ "$distro" =~ ubuntu|debian ]]; then
+        pkg_manager="apt-get"
+        agent_package="qemu-guest-agent"
+    elif [[ "$distro" =~ alma|rocky|centos|fedora ]]; then
+        pkg_manager="dnf"
+        agent_package="qemu-guest-agent"
+    fi
+
+    cat > "$customize_script" <<'CUSTOMIZE_EOF'
+#!/bin/bash
+
+# Update system
+echo "Updating system packages..."
+CUSTOMIZE_EOF
+
+    if [[ "$distro" =~ ubuntu|debian ]]; then
+        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get upgrade -y
+CUSTOMIZE_EOF
+    else
+        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
+dnf update -y
+CUSTOMIZE_EOF
+    fi
+
+    # Install qemu-guest-agent
+    if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
+        cat >> "$customize_script" <<CUSTOMIZE_EOF
+
+# Install QEMU Guest Agent
+echo "Installing QEMU Guest Agent..."
+${pkg_manager} install -y ${agent_package}
+systemctl enable qemu-guest-agent
+systemctl start qemu-guest-agent
+CUSTOMIZE_EOF
+    fi
+
+    # Configure SSH
+    cat >> "$customize_script" <<CUSTOMIZE_EOF
+
+# Configure SSH
+echo "Configuring SSH..."
+sed -i 's/#Port 22/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
+sed -i 's/Port 22/Port ${TMPL_SSH_PORT}/' /etc/ssh/sshd_config
+CUSTOMIZE_EOF
+
+    # Enable root login
+    if [ "$TMPL_ENABLE_ROOT" = "y" ]; then
+        cat >> "$customize_script" <<'CUSTOMIZE_EOF'
+sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config
+CUSTOMIZE_EOF
+    fi
+
+    # Set root password
+    cat >> "$customize_script" <<CUSTOMIZE_EOF
+
+# Set root password
+echo "Setting root password..."
+echo "root:${TMPL_ROOT_PASSWORD}" | chpasswd
+
+# Enable password authentication
+sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+CUSTOMIZE_EOF
+
+    # Restart SSH
+    cat >> "$customize_script" <<'CUSTOMIZE_EOF'
+
+# Restart SSH service
+if systemctl list-units --type=service | grep -q ssh.service; then
+    systemctl restart ssh
+elif systemctl list-units --type=service | grep -q sshd.service; then
+    systemctl restart sshd
+fi
+
+echo "Customization completed!"
+CUSTOMIZE_EOF
+
+    chmod +x "$customize_script"
+
+    # Use virt-customize to modify the image
+    echo -e "${CYAN}Applying customizations...${NC}"
+    echo "This may take a few minutes..."
+    echo ""
+
+    # Get the disk path
+    local disk_path=$(qm config "$vmid" | grep scsi0 | awk '{print $2}')
+    local storage_name=$(echo "$disk_path" | cut -d: -f1)
+    local disk_volume=$(echo "$disk_path" | cut -d: -f2)
+
+    # For local-lvm, we need to handle it differently
+    if [ "$storage_name" = "local-lvm" ]; then
+        echo -e "${YELLOW}Note: Customization with local-lvm requires converting to qcow2 format${NC}"
+        echo -e "${YELLOW}Using cloud-init for basic configuration instead...${NC}"
+        echo ""
+
+        # Use cloud-init for basic setup
+        qm set "$vmid" --ciuser root
+        qm set "$vmid" --cipassword "$TMPL_ROOT_PASSWORD"
+        qm set "$vmid" --ipconfig0 ip=dhcp
+
+        echo -e "${GREEN}✓ Basic cloud-init configuration applied${NC}"
+        echo -e "${YELLOW}Note: SSH port change and some customizations will need manual configuration${NC}"
+    else
+        # For other storage types, use virt-customize
+        local full_disk_path="/dev/${storage_name}/${disk_volume}"
+
+        if [ -f "$full_disk_path" ] || [ -b "$full_disk_path" ]; then
+            virt-customize -a "$full_disk_path" \
+                --run "$customize_script" \
+                --root-password "password:${TMPL_ROOT_PASSWORD}" \
+                2>&1 | while IFS= read -r line; do
+                echo "$line"
+            done
+
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
+                echo -e "${GREEN}✓ Customization completed successfully${NC}"
+            else
+                echo -e "${RED}✗ Some customizations may have failed${NC}"
+                echo -e "${YELLOW}You may need to configure manually after first boot${NC}"
+            fi
+        else
+            echo -e "${YELLOW}Using cloud-init for configuration...${NC}"
+            qm set "$vmid" --ciuser root
+            qm set "$vmid" --cipassword "$TMPL_ROOT_PASSWORD"
+            qm set "$vmid" --ipconfig0 ip=dhcp
+            echo -e "${GREEN}✓ Cloud-init configuration applied${NC}"
+        fi
+    fi
+
+    # Cleanup
+    rm -f "$customize_script"
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+# Function to convert VM to template
+convert_to_template() {
+    local vmid=$1
+
+    print_header
+    echo -e "${YELLOW}Converting VM ${vmid} to Template${NC}"
+    echo ""
+
+    read -p "Convert this VM to a template? (yes/no): " confirm
+
+    if [ "$confirm" = "yes" ]; then
+        echo "Converting to template..."
+        qm template "$vmid"
+
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo -e "${GREEN}════════════════════════════════════════${NC}"
+            echo -e "${GREEN}✓ Template created successfully!${NC}"
+            echo -e "${GREEN}════════════════════════════════════════${NC}"
+            echo ""
+            echo -e "Template ID: ${CYAN}${vmid}${NC}"
+            echo -e "Template Name: ${CYAN}${TMPL_NAME}${NC}"
+            echo ""
+            echo -e "${BLUE}To clone this template:${NC}"
+            echo -e "  qm clone ${vmid} <new-vmid> --name <new-name> --full"
+            echo ""
+            echo -e "${BLUE}SSH Configuration:${NC}"
+            echo -e "  Port: ${CYAN}${TMPL_SSH_PORT}${NC}"
+            echo -e "  Root Login: ${CYAN}${TMPL_ENABLE_ROOT}${NC}"
+            echo ""
+        else
+            echo -e "${RED}Failed to convert to template${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Template conversion cancelled${NC}"
+        echo "VM ${vmid} remains as a regular VM"
+    fi
+
+    echo ""
+    read -p "Press Enter to continue..."
+}
+
+# Main template creation workflow
+create_template_workflow() {
+    local distro=$1
+
+    # Check requirements
+    check_template_requirements
+
+    # Download image
+    print_header
+    echo -e "${YELLOW}Downloading ${distro} Image${NC}"
+    echo ""
+
+    local image_file=$(download_distro_image "$distro")
+
+    if [ $? -ne 0 ] || [ -z "$image_file" ]; then
+        echo -e "${RED}Failed to download image${NC}"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo ""
+
+    # Get configuration
+    if ! get_template_config; then
+        return 1
+    fi
+
+    # Show configuration summary
+    print_header
+    echo -e "${YELLOW}Template Configuration Summary${NC}"
+    echo ""
+    echo -e "VM ID: ${CYAN}${TMPL_VMID}${NC}"
+    echo -e "Name: ${CYAN}${TMPL_NAME}${NC}"
+    echo -e "CPU Cores: ${CYAN}${TMPL_CPU}${NC}"
+    echo -e "Memory: ${CYAN}${TMPL_MEMORY}MB${NC}"
+    echo -e "Disk Size: ${CYAN}${TMPL_DISK_SIZE}${NC}"
+    echo -e "Storage: ${CYAN}${TMPL_STORAGE}${NC}"
+    echo -e "Network Bridge: ${CYAN}${TMPL_BRIDGE}${NC}"
+    echo -e "SSH Port: ${CYAN}${TMPL_SSH_PORT}${NC}"
+    echo -e "Root Login: ${CYAN}${TMPL_ENABLE_ROOT}${NC}"
+    echo -e "Install QEMU Agent: ${CYAN}${TMPL_INSTALL_AGENT}${NC}"
+    echo ""
+
+    read -p "Proceed with template creation? (yes/no): " proceed
+
+    if [ "$proceed" != "yes" ]; then
+        echo -e "${YELLOW}Template creation cancelled${NC}"
+        read -p "Press Enter to continue..."
+        return 0
+    fi
+
+    # Create VM from image
+    print_header
+    if ! create_vm_from_image "$image_file" "$TMPL_VMID" "$TMPL_NAME"; then
+        echo -e "${RED}Failed to create VM from image${NC}"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo ""
+
+    # Customize VM
+    customize_vm "$TMPL_VMID" "$distro"
+
+    # Convert to template
+    convert_to_template "$TMPL_VMID"
+}
+
+# Template creator menu
+template_creator_menu() {
+    while true; do
+        print_header
+        echo -e "${YELLOW}VM Template Creator${NC}"
+        echo ""
+        echo -e "${BLUE}Select a distribution to create a template:${NC}"
+        echo ""
+        echo -e "${CYAN}=== Ubuntu ===${NC}"
+        echo "1.  Ubuntu 24.04 LTS (Noble)"
+        echo "2.  Ubuntu 22.04 LTS (Jammy)"
+        echo "3.  Ubuntu 20.04 LTS (Focal)"
+        echo ""
+        echo -e "${CYAN}=== Debian ===${NC}"
+        echo "4.  Debian 12 (Bookworm)"
+        echo "5.  Debian 11 (Bullseye)"
+        echo ""
+        echo -e "${CYAN}=== Enterprise Linux ===${NC}"
+        echo "6.  AlmaLinux 9"
+        echo "7.  AlmaLinux 8"
+        echo "8.  Rocky Linux 9"
+        echo "9.  Rocky Linux 8"
+        echo "10. CentOS Stream 9"
+        echo ""
+        echo -e "${CYAN}=== Fedora ===${NC}"
+        echo "11. Fedora 39"
+        echo ""
+        echo "0.  Back to main menu"
+        echo ""
+        read -p "Select option: " distro_choice
+
+        case $distro_choice in
+            1)
+                create_template_workflow "ubuntu-24.04"
+                ;;
+            2)
+                create_template_workflow "ubuntu-22.04"
+                ;;
+            3)
+                create_template_workflow "ubuntu-20.04"
+                ;;
+            4)
+                create_template_workflow "debian-12"
+                ;;
+            5)
+                create_template_workflow "debian-11"
+                ;;
+            6)
+                create_template_workflow "almalinux-9"
+                ;;
+            7)
+                create_template_workflow "almalinux-8"
+                ;;
+            8)
+                create_template_workflow "rocky-9"
+                ;;
+            9)
+                create_template_workflow "rocky-8"
+                ;;
+            10)
+                create_template_workflow "centos-stream-9"
+                ;;
+            11)
+                create_template_workflow "fedora-39"
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 # Main menu
 main_menu() {
     while true; do
         print_header
         echo "1. Troubleshooting & Diagnostics"
+        echo "2. VM Template Creator"
         echo "0. Exit"
         echo ""
         read -p "Select an option: " choice
@@ -1090,6 +1701,9 @@ main_menu() {
         case $choice in
             1)
                 troubleshooting_menu
+                ;;
+            2)
+                template_creator_menu
                 ;;
             0)
                 print_header

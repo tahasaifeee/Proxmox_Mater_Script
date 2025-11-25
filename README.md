@@ -9,6 +9,7 @@ A comprehensive one-click bash script for managing and troubleshooting Proxmox V
 🔧 **Service Management** - Separate handling of base and cluster-specific services
 📊 **Comprehensive Diagnostics** - Full system health checks and reporting
 🎨 **User-Friendly Interface** - Color-coded, menu-driven interface with clear status indicators
+🚀 **VM Template Creator** - Automated creation of VM templates from official cloud images
 
 ## How It Works
 
@@ -22,29 +23,37 @@ All features adapt to the detected mode, showing only relevant information and m
 
 ```
 Main Menu
-└── Troubleshooting & Diagnostics
-    │
-    ├── Service Management
-    │   ├── 1. Check all services status
-    │   ├── 2. Start all services
-    │   ├── 3. Stop all services
-    │   ├── 4. Restart all services
-    │   ├── 5. Manage individual service
-    │   └── 6. Manage services at boot
-    │
-    └── System Diagnostics
-        ├── 7.  System resource check (CPU/RAM/Disk)
-        ├── 8.  View recent service errors
-        ├── 9.  Check cluster status
-        ├── 10. Check storage status
-        ├── 11. Check network connectivity
-        ├── 12. View system logs (last 50 lines)
-        ├── 13. Check Proxmox version
-        ├── 14. Test cluster quorum
-        ├── 15. Check failed services
-        ├── 16. View journal for Proxmox services
-        ├── 17. Check VM/Container status
-        └── 18. Generate full diagnostic report
+├── 1. Troubleshooting & Diagnostics
+│   │
+│   ├── Service Management
+│   │   ├── 1. Check all services status
+│   │   ├── 2. Start all services
+│   │   ├── 3. Stop all services
+│   │   ├── 4. Restart all services
+│   │   ├── 5. Manage individual service
+│   │   └── 6. Manage services at boot
+│   │
+│   └── System Diagnostics
+│       ├── 7.  System resource check (CPU/RAM/Disk)
+│       ├── 8.  View recent service errors
+│       ├── 9.  Check cluster status
+│       ├── 10. Check storage status
+│       ├── 11. Check network connectivity
+│       ├── 12. View system logs (last 50 lines)
+│       ├── 13. Check Proxmox version
+│       ├── 14. Test cluster quorum
+│       ├── 15. Check failed services
+│       ├── 16. View journal for Proxmox services
+│       ├── 17. Check VM/Container status
+│       └── 18. Generate full diagnostic report
+│
+└── 2. VM Template Creator
+    ├── Ubuntu (24.04, 22.04, 20.04 LTS)
+    ├── Debian (12 Bookworm, 11 Bullseye)
+    ├── AlmaLinux (9, 8)
+    ├── Rocky Linux (9, 8)
+    ├── CentOS Stream 9
+    └── Fedora 39
 ```
 
 ## Managed Services
@@ -120,6 +129,107 @@ Or directly as root user:
 ```bash
 ./proxmox-master.sh
 ```
+
+## VM Template Creator
+
+The VM Template Creator is a powerful feature that automates the creation of standardized VM templates from official cloud images. This feature streamlines the process of setting up reusable templates for rapid VM deployment.
+
+### Supported Distributions
+
+#### Ubuntu
+- **Ubuntu 24.04 LTS (Noble)** - Latest LTS release
+- **Ubuntu 22.04 LTS (Jammy)** - Popular LTS release
+- **Ubuntu 20.04 LTS (Focal)** - Stable LTS release
+
+#### Debian
+- **Debian 12 (Bookworm)** - Latest stable release
+- **Debian 11 (Bullseye)** - Previous stable release
+
+#### Enterprise Linux
+- **AlmaLinux 9 & 8** - RHEL-compatible enterprise Linux
+- **Rocky Linux 9 & 8** - Community-driven enterprise Linux
+- **CentOS Stream 9** - Rolling-release RHEL preview
+
+#### Fedora
+- **Fedora 39** - Cutting-edge features and packages
+
+### Template Features
+
+#### Automated Download
+- Downloads official cloud images from trusted sources
+- Supports qcow2 and raw image formats
+- Caches downloaded images to avoid re-downloading
+- Progress indicators during download
+
+#### Customizable Configuration
+**VM Specifications:**
+- VM ID (auto-detects next available ID starting from 9000)
+- Template name
+- CPU cores (default: 2)
+- Memory in MB (default: 2048)
+- Disk size (default: 20G, expandable)
+- Storage location (default: local-lvm)
+- Network bridge (default: vmbr0)
+
+**Security Settings:**
+- Custom SSH port (default: 22)
+- Root password configuration
+- Enable/disable root login with password
+- Password authentication setup
+
+**System Configuration:**
+- QEMU Guest Agent installation (recommended)
+- Cloud-init integration
+- Automatic package updates during setup
+
+#### Template Creation Workflow
+
+1. **Select Distribution**: Choose from 11+ supported Linux distributions
+2. **Download Image**: Automatically downloads official cloud image
+3. **Configure Template**: Set VM specifications and security options
+4. **Create VM**: Builds VM from cloud image with your specifications
+5. **Customize**: Applies your security and configuration settings
+6. **Convert to Template**: Finalizes as a reusable template
+
+### Using Templates
+
+Once created, templates can be cloned to create new VMs:
+
+```bash
+# Clone template to create a new VM
+qm clone <template-id> <new-vmid> --name <vm-name> --full
+
+# Example:
+qm clone 9000 100 --name my-ubuntu-server --full
+```
+
+### Template Benefits
+
+✅ **Consistency** - All VMs from the same template have identical configurations
+✅ **Speed** - Deploy new VMs in seconds instead of installing from ISO
+✅ **Standardization** - Enforce security policies and configurations
+✅ **Efficiency** - Reduces manual configuration and human error
+✅ **Flexibility** - Customize templates for different use cases
+✅ **Best Practices** - Uses official cloud images optimized for virtualization
+
+### Requirements
+
+The script automatically installs required packages:
+- `wget` - For downloading cloud images
+- `libguestfs-tools` - For image customization (optional)
+
+### Storage Considerations
+
+**local-lvm**: Basic cloud-init configuration (SSH port changes require manual setup)
+**Other storage types**: Full customization support with virt-customize
+
+### Example Use Cases
+
+1. **Development Environments**: Create templates with pre-configured dev tools
+2. **Testing**: Quickly spin up clean test environments
+3. **Production**: Standardized servers with security hardening
+4. **Multi-tenant**: Separate templates for different customers or projects
+5. **Disaster Recovery**: Ready-to-deploy templates for quick restoration
 
 ## Cluster-Aware Features
 
@@ -394,6 +504,13 @@ If the script doesn't run:
 - Resource utilization monitoring
 - Network connectivity verification
 
+### Template Management
+- Create standardized VM templates for rapid deployment
+- Build templates with pre-configured security settings
+- Set up development/testing/production templates
+- Maintain consistency across multiple VMs
+- Quick recovery with ready-to-deploy templates
+
 ## Best Practices
 
 1. **Regular Status Checks**: Run option 1 daily to ensure all services are running
@@ -424,6 +541,19 @@ For issues or questions:
 
 ## Changelog
 
+### Version 3.0 - Template Creator Release
+- ✨ **NEW**: VM Template Creator with multi-distro support
+- ✨ **NEW**: Support for 11+ Linux distributions (Ubuntu, Debian, AlmaLinux, Rocky, CentOS, Fedora)
+- ✨ **NEW**: Automated cloud image download from official sources
+- ✨ **NEW**: Interactive template configuration (CPU, RAM, disk, network)
+- ✨ **NEW**: Customizable SSH port and root login settings
+- ✨ **NEW**: QEMU Guest Agent installation option
+- ✨ **NEW**: Cloud-init integration for initial VM configuration
+- ✨ **NEW**: Automatic VM ID detection starting from 9000
+- ✨ **NEW**: Template conversion workflow with confirmation
+- 🔧 **IMPROVED**: Enhanced cluster name detection with multiple fallback methods
+- 🔧 **IMPROVED**: More robust error handling and user feedback
+
 ### Version 2.0 - Cluster-Aware Release
 - ✨ **NEW**: Automatic cluster detection
 - ✨ **NEW**: Intelligent service management (base vs cluster services)
@@ -444,6 +574,6 @@ For issues or questions:
 
 ---
 
-**Current Version**: 2.0 (Cluster-Aware)
+**Current Version**: 3.0 (Template Creator)
 **Last Updated**: 2025
 **Compatible with**: Proxmox VE 7.x and 8.x (Standalone and Cluster)
