@@ -1307,7 +1307,9 @@ download_distro_image() {
     echo "" >&2
 
     # Download with better error handling
-    wget --show-progress -O "$dest_file" "$url" 2>&1 >&2
+    # wget outputs to stderr by default, which is what we want
+    # Only the final file path echo goes to stdout for capture
+    wget --show-progress -O "$dest_file" "$url"
     local wget_status=$?
 
     if [ $wget_status -eq 0 ]; then
