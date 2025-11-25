@@ -1207,12 +1207,28 @@ download_distro_image() {
     echo -e "${BLUE}URL: $url${NC}"
     echo ""
 
-    if wget -q --show-progress -O "$dest_file" "$url"; then
-        echo -e "${GREEN}Download completed!${NC}"
-        echo "$dest_file"
-        return 0
+    # Download with better error handling
+    if wget --show-progress -O "$dest_file" "$url" 2>&1; then
+        # Verify file exists and has content
+        if [ -f "$dest_file" ] && [ -s "$dest_file" ]; then
+            local file_size=$(stat -f%z "$dest_file" 2>/dev/null || stat -c%s "$dest_file" 2>/dev/null)
+            echo ""
+            echo -e "${GREEN}✓ Download completed!${NC}"
+            echo -e "${CYAN}File: $dest_file${NC}"
+            echo -e "${CYAN}Size: $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "$file_size bytes")${NC}"
+
+            # Make sure file is readable
+            chmod 644 "$dest_file"
+
+            echo "$dest_file"
+            return 0
+        else
+            echo -e "${RED}✗ Download failed - file is empty or missing${NC}"
+            rm -f "$dest_file"
+            return 1
+        fi
     else
-        echo -e "${RED}Download failed!${NC}"
+        echo -e "${RED}✗ Download failed!${NC}"
         rm -f "$dest_file"
         return 1
     fi
@@ -1302,6 +1318,23 @@ create_vm_from_image() {
     echo -e "${CYAN}Creating VM ${vmid} - ${name}${NC}"
     echo ""
 
+    # Verify image file exists and is accessible
+    if [ ! -f "$image_file" ]; then
+        echo -e "${RED}✗ Image file not found: $image_file${NC}"
+        return 1
+    fi
+
+    if [ ! -r "$image_file" ]; then
+        echo -e "${RED}✗ Image file not readable: $image_file${NC}"
+        echo -e "${YELLOW}Attempting to fix permissions...${NC}"
+        chmod 644 "$image_file"
+    fi
+
+    local file_size=$(stat -f%z "$image_file" 2>/dev/null || stat -c%s "$image_file" 2>/dev/null)
+    echo -e "${CYAN}Image file: $image_file${NC}"
+    echo -e "${CYAN}Size: $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "$file_size bytes")${NC}"
+    echo ""
+
     # Create VM
     echo "Creating VM..."
     qm create "$vmid" \
@@ -1312,18 +1345,23 @@ create_vm_from_image() {
         --scsihw virtio-scsi-pci
 
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to create VM${NC}"
+        echo -e "${RED}✗ Failed to create VM${NC}"
         return 1
     fi
 
     echo -e "${GREEN}✓ VM created${NC}"
+    echo ""
 
     # Import disk
     echo "Importing disk image..."
-    qm importdisk "$vmid" "$image_file" "$TMPL_STORAGE" -format qcow2
+    echo -e "${YELLOW}This may take a few minutes depending on image size...${NC}"
+
+    qm importdisk "$vmid" "$image_file" "$TMPL_STORAGE"
 
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to import disk${NC}"
+        echo -e "${RED}✗ Failed to import disk${NC}"
+        echo -e "${YELLOW}Cleaning up VM...${NC}"
+        qm destroy "$vmid" 2>/dev/null
         return 1
     fi
 
@@ -1557,13 +1595,27 @@ create_template_workflow() {
     echo ""
 
     local image_file=$(download_distro_image "$distro")
+    local download_status=$?
 
-    if [ $? -ne 0 ] || [ -z "$image_file" ]; then
-        echo -e "${RED}Failed to download image${NC}"
+    if [ $download_status -ne 0 ] || [ -z "$image_file" ]; then
+        echo ""
+        echo -e "${RED}✗ Failed to download image${NC}"
+        echo -e "${YELLOW}Please check your internet connection and try again${NC}"
         read -p "Press Enter to continue..."
         return 1
     fi
 
+    # Verify the downloaded file exists before proceeding
+    if [ ! -f "$image_file" ]; then
+        echo ""
+        echo -e "${RED}✗ Downloaded file not found: $image_file${NC}"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Image ready for template creation${NC}"
+    sleep 2
     echo ""
 
     # Get configuration
