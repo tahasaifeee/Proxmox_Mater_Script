@@ -1132,6 +1132,105 @@ get_next_vmid() {
     echo "$vmid"
 }
 
+# Function to get available storage for VM disks
+get_available_storage() {
+    echo -e "${CYAN}Available Storage:${NC}"
+    echo ""
+
+    # Get storage list that supports VM images/containers
+    local storage_list=$(pvesm status -content images 2>/dev/null | tail -n +2 | awk '{print $1}')
+
+    if [ -z "$storage_list" ]; then
+        echo -e "${RED}No compatible storage found!${NC}"
+        return 1
+    fi
+
+    local counter=1
+    local -a storage_array
+
+    # Display storage options
+    while IFS= read -r storage; do
+        if [ -n "$storage" ]; then
+            # Get storage details
+            local storage_info=$(pvesm status -storage "$storage" 2>/dev/null | tail -n +2)
+            local storage_type=$(echo "$storage_info" | awk '{print $2}')
+            local storage_avail=$(echo "$storage_info" | awk '{print $4}')
+            local storage_used=$(echo "$storage_info" | awk '{print $5}')
+
+            storage_array+=("$storage")
+
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$storage${NC}"
+            echo -e "   Type: ${CYAN}$storage_type${NC} | Available: ${YELLOW}$storage_avail${NC} | Used: ${YELLOW}$storage_used%${NC}"
+            echo ""
+            ((counter++))
+        fi
+    done <<< "$storage_list"
+
+    # Let user select
+    read -p "Select storage number [1]: " storage_choice
+    storage_choice=${storage_choice:-1}
+
+    # Validate selection
+    if [ "$storage_choice" -ge 1 ] && [ "$storage_choice" -lt "$counter" ]; then
+        echo "${storage_array[$((storage_choice-1))]}"
+        return 0
+    else
+        echo -e "${RED}Invalid selection${NC}" >&2
+        return 1
+    fi
+}
+
+# Function to get available network bridges
+get_available_bridges() {
+    echo -e "${CYAN}Available Network Bridges:${NC}"
+    echo ""
+
+    # Get list of bridges
+    local bridge_list=$(ip -brief link show type bridge 2>/dev/null | awk '{print $1}')
+
+    if [ -z "$bridge_list" ]; then
+        # Fallback: check all vmbr interfaces
+        bridge_list=$(ip -brief addr | grep -E '^vmbr' | awk '{print $1}')
+    fi
+
+    if [ -z "$bridge_list" ]; then
+        echo -e "${YELLOW}No bridges found${NC}"
+        return 1
+    fi
+
+    local counter=1
+    local -a bridge_array
+
+    # Display bridge options
+    while IFS= read -r bridge; do
+        if [ -n "$bridge" ]; then
+            # Get bridge IP if available
+            local bridge_ip=$(ip -brief addr show "$bridge" 2>/dev/null | awk '{print $3}')
+            [ -z "$bridge_ip" ] && bridge_ip="No IP"
+
+            bridge_array+=("$bridge")
+
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$bridge${NC} - IP: ${CYAN}$bridge_ip${NC}"
+            ((counter++))
+        fi
+    done <<< "$bridge_list"
+
+    echo ""
+
+    # Let user select
+    read -p "Select bridge number [1]: " bridge_choice
+    bridge_choice=${bridge_choice:-1}
+
+    # Validate selection
+    if [ "$bridge_choice" -ge 1 ] && [ "$bridge_choice" -lt "$counter" ]; then
+        echo "${bridge_array[$((bridge_choice-1))]}"
+        return 0
+    else
+        echo -e "${RED}Invalid selection${NC}" >&2
+        return 1
+    fi
+}
+
 # Function to download distro images
 download_distro_image() {
     local distro=$1
@@ -1267,12 +1366,24 @@ get_template_config() {
     disk_size=${disk_size:-20G}
 
     # Storage location
-    read -p "Enter storage location [local-lvm]: " storage
-    storage=${storage:-local-lvm}
+    echo ""
+    echo -e "${BLUE}Select Storage Location:${NC}"
+    local storage=$(get_available_storage)
+    if [ $? -ne 0 ] || [ -z "$storage" ]; then
+        echo -e "${YELLOW}Falling back to manual entry...${NC}"
+        read -p "Enter storage location [local-lvm]: " storage
+        storage=${storage:-local-lvm}
+    fi
 
     # Network bridge
-    read -p "Enter network bridge [vmbr0]: " bridge
-    bridge=${bridge:-vmbr0}
+    echo -e "${BLUE}Select Network Bridge:${NC}"
+    local bridge=$(get_available_bridges)
+    if [ $? -ne 0 ] || [ -z "$bridge" ]; then
+        echo -e "${YELLOW}Falling back to manual entry...${NC}"
+        read -p "Enter network bridge [vmbr0]: " bridge
+        bridge=${bridge:-vmbr0}
+    fi
+    echo ""
 
     # SSH Port
     read -p "Enter SSH port [22]: " ssh_port
