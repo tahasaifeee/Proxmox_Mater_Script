@@ -1574,35 +1574,38 @@ runcmd:
   - |
     # Set hostname from Proxmox VM name using multiple methods
     echo "=== Hostname Configuration Debug ===" > /tmp/hostname-setup.log
-    # Method 1: Try cloud-init instance data via cloud-init query
-    VM_NAME=\$(cloud-init query local_hostname 2>/dev/null | tr -d '"' || echo "")
-    echo "Method 1 (cloud-init query): \$VM_NAME" >> /tmp/hostname-setup.log
-    # Method 2: Try reading from cloud-init instance-data JSON
+    # Method 1: Try reading from DMI/SMBIOS (Proxmox sets VM name here)
+    VM_NAME=\$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr -d ' ' || echo "")
+    echo "Method 1 (DMI product_name): '\$VM_NAME'" >> /tmp/hostname-setup.log
+    # Method 2: Try cloud-init instance data via cloud-init query
+    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
+      VM_NAME=\$(cloud-init query local_hostname 2>/dev/null | tr -d '"' || echo "")
+      echo "Method 2 (cloud-init query): '\$VM_NAME'" >> /tmp/hostname-setup.log
+    fi
+    # Method 3: Try reading from cloud-init instance-data JSON
     if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
       VM_NAME=\$(grep -oP '"local-hostname":\s*"\K[^"]+' /run/cloud-init/instance-data.json 2>/dev/null || echo "")
-      echo "Method 2 (instance-data.json): \$VM_NAME" >> /tmp/hostname-setup.log
+      echo "Method 3 (instance-data.json): '\$VM_NAME'" >> /tmp/hostname-setup.log
     fi
-    # Method 3: Try reading from /var/lib/cloud/data/instance-id
-    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
-      if [ -f /var/lib/cloud/data/instance-id ]; then
-        VM_NAME=\$(cat /var/lib/cloud/data/instance-id 2>/dev/null || echo "")
-        echo "Method 3 (instance-id file): \$VM_NAME" >> /tmp/hostname-setup.log
-      fi
-    fi
-    # Apply hostname if found and not a default distro name
-    echo "Final VM_NAME: \$VM_NAME" >> /tmp/hostname-setup.log
-    if [ -n "\$VM_NAME" ] && [ "\$VM_NAME" != "ubuntu" ] && [ "\$VM_NAME" != "debian" ] && [ "\$VM_NAME" != "localhost" ]; then
-      echo "Setting hostname to: \$VM_NAME" >> /tmp/hostname-setup.log
+    # Apply hostname if found and not a default/invalid name
+    echo "Final VM_NAME: '\$VM_NAME'" >> /tmp/hostname-setup.log
+    # Filter out invalid names: empty, default distro names, localhost, or UUIDs
+    if [ -n "\$VM_NAME" ] && \
+       [ "\$VM_NAME" != "ubuntu" ] && \
+       [ "\$VM_NAME" != "debian" ] && \
+       [ "\$VM_NAME" != "localhost" ] && \
+       ! echo "\$VM_NAME" | grep -qE '^[a-f0-9]{32,}$'; then
+      echo "Setting hostname to: '\$VM_NAME'" >> /tmp/hostname-setup.log
       echo "\$VM_NAME" > /etc/hostname
       hostnamectl set-hostname "\$VM_NAME" 2>/dev/null || hostname "\$VM_NAME"
       # Update /etc/hosts
-      sed -i "s/127.0.1.1.*/127.0.1.1 \$VM_NAME/" /etc/hosts
-      if ! grep -q "127.0.1.1" /etc/hosts; then
+      sed -i "s/127.0.1.1.*/127.0.1.1 \$VM_NAME/" /etc/hosts 2>/dev/null
+      if ! grep -q "127.0.1.1" /etc/hosts 2>/dev/null; then
         echo "127.0.1.1 \$VM_NAME" >> /etc/hosts
       fi
-      echo "Hostname successfully set" >> /tmp/hostname-setup.log
+      echo "Hostname successfully set to '\$VM_NAME'" >> /tmp/hostname-setup.log
     else
-      echo "Hostname not set - invalid or default name" >> /tmp/hostname-setup.log
+      echo "Hostname not set - invalid, default, or UUID detected" >> /tmp/hostname-setup.log
     fi
   - mkdir -p /etc/ssh/sshd_config.d
   - chmod 755 /etc/ssh/sshd_config.d
