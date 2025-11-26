@@ -1113,8 +1113,6 @@ check_template_requirements() {
 
     # Check for required commands
     command -v wget &>/dev/null || missing_packages+=("wget")
-    command -v sshpass &>/dev/null || missing_packages+=("sshpass")
-    command -v libguestfs-tools &>/dev/null || missing_packages+=("libguestfs-tools")
 
     if [ ${#missing_packages[@]} -gt 0 ]; then
         echo -e "${YELLOW}Installing required packages: ${missing_packages[*]}${NC}"
@@ -1396,30 +1394,6 @@ get_template_config() {
     fi
     echo ""
 
-    # SSH Port
-    read -p "Enter SSH port [22]: " ssh_port
-    ssh_port=${ssh_port:-22}
-
-    # Root password
-    read -sp "Enter root password: " root_password
-    echo ""
-    read -sp "Confirm root password: " root_password_confirm
-    echo ""
-
-    if [ "$root_password" != "$root_password_confirm" ]; then
-        echo -e "${RED}Passwords do not match!${NC}"
-        sleep 2
-        return 1
-    fi
-
-    # Enable root login
-    read -p "Enable root login with password? (y/n) [y]: " enable_root
-    enable_root=${enable_root:-y}
-
-    # Install qemu-guest-agent
-    read -p "Install qemu-guest-agent? (y/n) [y]: " install_agent
-    install_agent=${install_agent:-y}
-
     # Export variables
     export TMPL_VMID="$vmid"
     export TMPL_NAME="$template_name"
@@ -1428,10 +1402,6 @@ get_template_config() {
     export TMPL_DISK_SIZE="$disk_size"
     export TMPL_STORAGE="$storage"
     export TMPL_BRIDGE="$bridge"
-    export TMPL_SSH_PORT="$ssh_port"
-    export TMPL_ROOT_PASSWORD="$root_password"
-    export TMPL_ENABLE_ROOT="$enable_root"
-    export TMPL_INSTALL_AGENT="$install_agent"
 
     return 0
 }
@@ -1494,19 +1464,18 @@ create_vm_from_image() {
 
     echo -e "${GREEN}✓ Disk imported${NC}"
 
-    # Attach disk
+    # Attach disk and resize
     echo "Attaching disk to VM..."
     qm set "$vmid" --scsi0 "${TMPL_STORAGE}:vm-${vmid}-disk-0"
     qm set "$vmid" --boot order=scsi0
-    qm set "$vmid" --ide2 "${TMPL_STORAGE}:cloudinit"
 
-    # Add serial console for access and standard VGA display
-    qm set "$vmid" --serial0 socket --vga std
+    # Resize disk to requested size
+    qm resize "$vmid" scsi0 "$TMPL_DISK_SIZE"
 
-    # Enable QEMU guest agent
-    qm set "$vmid" --agent enabled=1
-
-    echo -e "${GREEN}✓ VM configuration completed${NC}"
+    echo -e "${GREEN}✓ VM created successfully${NC}"
+    echo ""
+    echo -e "${YELLOW}Note: VM is created but not started${NC}"
+    echo -e "${YELLOW}You can now manually configure and start it${NC}"
 
     return 0
 }
@@ -2076,12 +2045,12 @@ create_template_workflow() {
     echo -e "Disk Size: ${CYAN}${TMPL_DISK_SIZE}${NC}"
     echo -e "Storage: ${CYAN}${TMPL_STORAGE}${NC}"
     echo -e "Network Bridge: ${CYAN}${TMPL_BRIDGE}${NC}"
-    echo -e "SSH Port: ${CYAN}${TMPL_SSH_PORT}${NC}"
-    echo -e "Root Login: ${CYAN}${TMPL_ENABLE_ROOT}${NC}"
-    echo -e "Install QEMU Agent: ${CYAN}${TMPL_INSTALL_AGENT}${NC}"
+    echo ""
+    echo -e "${YELLOW}Note: VM will be created but not configured${NC}"
+    echo -e "${YELLOW}You will configure it manually after creation${NC}"
     echo ""
 
-    read -p "Proceed with template creation? (yes/no): " proceed
+    read -p "Proceed with VM creation? (yes/no): " proceed
 
     if [ "$proceed" != "yes" ]; then
         echo -e "${YELLOW}Template creation cancelled${NC}"
@@ -2091,7 +2060,7 @@ create_template_workflow() {
 
     # Create VM from image
     print_header
-    echo -e "${YELLOW}Step 4: Creating VM from Image${NC}"
+    echo -e "${YELLOW}Step 4: Creating VM${NC}"
     echo ""
 
     if ! create_vm_from_image "$image_file" "$TMPL_VMID" "$TMPL_NAME"; then
@@ -2101,68 +2070,28 @@ create_template_workflow() {
     fi
 
     echo ""
-    read -p "Press Enter to start and configure VM..."
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ VM Created Successfully!${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${BLUE}VM Details:${NC}"
+    echo -e "  VM ID: ${CYAN}${TMPL_VMID}${NC}"
+    echo -e "  Name: ${CYAN}${TMPL_NAME}${NC}"
+    echo -e "  CPU: ${CYAN}${TMPL_CPU} cores${NC}"
+    echo -e "  Memory: ${CYAN}${TMPL_MEMORY}MB${NC}"
+    echo -e "  Disk: ${CYAN}${TMPL_DISK_SIZE}${NC}"
+    echo -e "  Storage: ${CYAN}${TMPL_STORAGE}${NC}"
+    echo -e "  Network: ${CYAN}${TMPL_BRIDGE}${NC}"
+    echo ""
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo -e "  1. Start the VM from Proxmox UI or: ${CYAN}qm start ${TMPL_VMID}${NC}"
+    echo -e "  2. Access the VM console and configure it manually"
+    echo -e "  3. Install any software you need"
+    echo -e "  4. When done, shut down the VM: ${CYAN}qm shutdown ${TMPL_VMID}${NC}"
+    echo -e "  5. Convert to template: ${CYAN}qm template ${TMPL_VMID}${NC}"
+    echo ""
 
-    # Start VM
-    print_header
-    echo -e "${YELLOW}Step 5: Starting VM${NC}"
-    echo ""
-    echo -e "${CYAN}Starting VM ${TMPL_VMID}...${NC}"
-    qm start "$TMPL_VMID"
-    sleep 5
-    echo -e "${GREEN}✓ VM started${NC}"
-    echo ""
-
-    # Wait for VM to get IP
-    local vm_ip=$(wait_for_vm_ip "$TMPL_VMID")
-    if [ $? -ne 0 ] || [ -z "$vm_ip" ]; then
-        echo -e "${RED}✗ Failed to get VM IP address${NC}"
-        echo -e "${YELLOW}You can try to find it manually and continue${NC}"
-        read -p "Enter VM IP address manually (or press Enter to cancel): " manual_ip
-        if [ -z "$manual_ip" ]; then
-            qm stop "$TMPL_VMID"
-            read -p "Press Enter to continue..."
-            return 1
-        fi
-        vm_ip="$manual_ip"
-    fi
-
-    echo ""
-    echo -e "${CYAN}VM IP: ${GREEN}$vm_ip${NC}"
-    echo ""
     read -p "Press Enter to continue..."
-
-    # Configure VM live
-    print_header
-    echo -e "${YELLOW}Step 6: Configuring VM (Live Configuration)${NC}"
-    echo ""
-
-    if ! configure_vm_live "$TMPL_VMID" "$vm_ip" "$distro"; then
-        echo -e "${RED}✗ Configuration failed${NC}"
-        read -p "Press Enter to continue..."
-        return 1
-    fi
-
-    # Optional packages
-    install_optional_packages "$vm_ip" "$distro"
-
-    # Verify services
-    verify_vm_services "$vm_ip" "$TMPL_VMID"
-
-    # Cleanup and shutdown
-    print_header
-    echo -e "${YELLOW}Step 7: Preparing for Template Conversion${NC}"
-    echo ""
-    cleanup_for_template "$vm_ip" "$TMPL_VMID"
-
-    echo ""
-    read -p "Press Enter to continue..."
-
-    # Convert to template
-    print_header
-    echo -e "${YELLOW}Step 8: Converting to Template${NC}"
-    echo ""
-    convert_to_template "$TMPL_VMID"
 }
 
 # Template creator menu
