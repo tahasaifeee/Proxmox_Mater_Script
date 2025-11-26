@@ -1134,14 +1134,14 @@ get_next_vmid() {
 
 # Function to get available storage for VM disks
 get_available_storage() {
-    echo -e "${CYAN}Available Storage:${NC}"
-    echo ""
+    echo -e "${CYAN}Available Storage:${NC}" >&2
+    echo "" >&2
 
     # Get storage list that supports VM images/containers
     local storage_list=$(pvesm status -content images 2>/dev/null | tail -n +2 | awk '{print $1}')
 
     if [ -z "$storage_list" ]; then
-        echo -e "${RED}No compatible storage found!${NC}"
+        echo -e "${RED}No compatible storage found!${NC}" >&2
         return 1
     fi
 
@@ -1159,15 +1159,15 @@ get_available_storage() {
 
             storage_array+=("$storage")
 
-            echo -e "${BLUE}$counter.${NC} ${GREEN}$storage${NC}"
-            echo -e "   Type: ${CYAN}$storage_type${NC} | Available: ${YELLOW}$storage_avail${NC} | Used: ${YELLOW}$storage_used%${NC}"
-            echo ""
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$storage${NC}" >&2
+            echo -e "   Type: ${CYAN}$storage_type${NC} | Available: ${YELLOW}$storage_avail${NC} | Used: ${YELLOW}$storage_used%${NC}" >&2
+            echo "" >&2
             ((counter++))
         fi
     done <<< "$storage_list"
 
     # Let user select
-    read -p "Select storage number [1]: " storage_choice
+    read -p "Select storage number [1]: " storage_choice >&2
     storage_choice=${storage_choice:-1}
 
     # Validate selection
@@ -1182,8 +1182,8 @@ get_available_storage() {
 
 # Function to get available network bridges
 get_available_bridges() {
-    echo -e "${CYAN}Available Network Bridges:${NC}"
-    echo ""
+    echo -e "${CYAN}Available Network Bridges:${NC}" >&2
+    echo "" >&2
 
     # Get list of bridges
     local bridge_list=$(ip -brief link show type bridge 2>/dev/null | awk '{print $1}')
@@ -1194,7 +1194,7 @@ get_available_bridges() {
     fi
 
     if [ -z "$bridge_list" ]; then
-        echo -e "${YELLOW}No bridges found${NC}"
+        echo -e "${YELLOW}No bridges found${NC}" >&2
         return 1
     fi
 
@@ -1210,15 +1210,15 @@ get_available_bridges() {
 
             bridge_array+=("$bridge")
 
-            echo -e "${BLUE}$counter.${NC} ${GREEN}$bridge${NC} - IP: ${CYAN}$bridge_ip${NC}"
+            echo -e "${BLUE}$counter.${NC} ${GREEN}$bridge${NC} - IP: ${CYAN}$bridge_ip${NC}" >&2
             ((counter++))
         fi
     done <<< "$bridge_list"
 
-    echo ""
+    echo "" >&2
 
     # Let user select
-    read -p "Select bridge number [1]: " bridge_choice
+    read -p "Select bridge number [1]: " bridge_choice >&2
     bridge_choice=${bridge_choice:-1}
 
     # Validate selection
