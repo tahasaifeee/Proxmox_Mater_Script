@@ -1499,8 +1499,8 @@ create_vm_from_image() {
     qm set "$vmid" --boot order=scsi0
     qm set "$vmid" --ide2 "${TMPL_STORAGE}:cloudinit"
 
-    # Add serial console
-    qm set "$vmid" --serial0 socket --vga serial0
+    # Add serial console for access and standard VGA display
+    qm set "$vmid" --serial0 socket --vga std
 
     # Enable QEMU guest agent
     qm set "$vmid" --agent enabled=1
@@ -1547,8 +1547,9 @@ Port ${TMPL_SSH_PORT}"
 
     cat > "$cloudinit_file" <<EOF
 #cloud-config
-hostname: ${TMPL_NAME}
+# Hostname will be set automatically from VM name by Proxmox
 manage_etc_hosts: true
+preserve_hostname: false
 
 users:
   - name: root
@@ -1572,6 +1573,13 @@ $(echo "$ssh_config" | sed 's/^/      /')
     owner: root:root
 
 runcmd:
+  - |
+    # Set hostname from Proxmox VM name
+    INSTANCE_NAME=\$(curl -s http://169.254.169.254/latest/meta-data/local-hostname 2>/dev/null || echo "")
+    if [ -n "\$INSTANCE_NAME" ]; then
+      hostnamectl set-hostname "\$INSTANCE_NAME" || hostname "\$INSTANCE_NAME"
+      echo "\$INSTANCE_NAME" > /etc/hostname
+    fi
   - mkdir -p /etc/ssh/sshd_config.d
   - chmod 755 /etc/ssh/sshd_config.d
   - |
