@@ -1113,6 +1113,7 @@ check_template_requirements() {
 
     # Check for required commands
     command -v wget &>/dev/null || missing_packages+=("wget")
+    command -v sshpass &>/dev/null || missing_packages+=("sshpass")
     command -v libguestfs-tools &>/dev/null || missing_packages+=("libguestfs-tools")
 
     if [ ${#missing_packages[@]} -gt 0 ]; then
@@ -2100,17 +2101,66 @@ create_template_workflow() {
     fi
 
     echo ""
-    read -p "Press Enter to continue to customization..."
+    read -p "Press Enter to start and configure VM..."
 
-    # Customize VM
+    # Start VM
     print_header
-    echo -e "${YELLOW}Step 5: Customizing VM ${TMPL_VMID}${NC}"
+    echo -e "${YELLOW}Step 5: Starting VM${NC}"
     echo ""
-    customize_vm "$TMPL_VMID" "$distro"
+    echo -e "${CYAN}Starting VM ${TMPL_VMID}...${NC}"
+    qm start "$TMPL_VMID"
+    sleep 5
+    echo -e "${GREEN}✓ VM started${NC}"
+    echo ""
+
+    # Wait for VM to get IP
+    local vm_ip=$(wait_for_vm_ip "$TMPL_VMID")
+    if [ $? -ne 0 ] || [ -z "$vm_ip" ]; then
+        echo -e "${RED}✗ Failed to get VM IP address${NC}"
+        echo -e "${YELLOW}You can try to find it manually and continue${NC}"
+        read -p "Enter VM IP address manually (or press Enter to cancel): " manual_ip
+        if [ -z "$manual_ip" ]; then
+            qm stop "$TMPL_VMID"
+            read -p "Press Enter to continue..."
+            return 1
+        fi
+        vm_ip="$manual_ip"
+    fi
+
+    echo ""
+    echo -e "${CYAN}VM IP: ${GREEN}$vm_ip${NC}"
+    echo ""
+    read -p "Press Enter to continue..."
+
+    # Configure VM live
+    print_header
+    echo -e "${YELLOW}Step 6: Configuring VM (Live Configuration)${NC}"
+    echo ""
+
+    if ! configure_vm_live "$TMPL_VMID" "$vm_ip" "$distro"; then
+        echo -e "${RED}✗ Configuration failed${NC}"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+
+    # Optional packages
+    install_optional_packages "$vm_ip" "$distro"
+
+    # Verify services
+    verify_vm_services "$vm_ip" "$TMPL_VMID"
+
+    # Cleanup and shutdown
+    print_header
+    echo -e "${YELLOW}Step 7: Preparing for Template Conversion${NC}"
+    echo ""
+    cleanup_for_template "$vm_ip" "$TMPL_VMID"
+
+    echo ""
+    read -p "Press Enter to continue..."
 
     # Convert to template
     print_header
-    echo -e "${YELLOW}Step 6: Converting to Template${NC}"
+    echo -e "${YELLOW}Step 8: Converting to Template${NC}"
     echo ""
     convert_to_template "$TMPL_VMID"
 }
