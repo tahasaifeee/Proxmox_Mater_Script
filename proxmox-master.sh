@@ -1547,9 +1547,7 @@ Port ${TMPL_SSH_PORT}"
 
     cat > "$cloudinit_file" <<EOF
 #cloud-config
-# Hostname will be set automatically from VM name by Proxmox
-manage_etc_hosts: true
-preserve_hostname: false
+# Don't set static hostname - will be configured from VM name on first boot
 
 users:
   - name: root
@@ -1574,11 +1572,37 @@ $(echo "$ssh_config" | sed 's/^/      /')
 
 runcmd:
   - |
-    # Set hostname from Proxmox VM name
-    INSTANCE_NAME=\$(curl -s http://169.254.169.254/latest/meta-data/local-hostname 2>/dev/null || echo "")
-    if [ -n "\$INSTANCE_NAME" ]; then
-      hostnamectl set-hostname "\$INSTANCE_NAME" || hostname "\$INSTANCE_NAME"
-      echo "\$INSTANCE_NAME" > /etc/hostname
+    # Set hostname from Proxmox VM name using multiple methods
+    echo "=== Hostname Configuration Debug ===" > /tmp/hostname-setup.log
+    # Method 1: Try cloud-init instance data via cloud-init query
+    VM_NAME=\$(cloud-init query local_hostname 2>/dev/null | tr -d '"' || echo "")
+    echo "Method 1 (cloud-init query): \$VM_NAME" >> /tmp/hostname-setup.log
+    # Method 2: Try reading from cloud-init instance-data JSON
+    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
+      VM_NAME=\$(grep -oP '"local-hostname":\s*"\K[^"]+' /run/cloud-init/instance-data.json 2>/dev/null || echo "")
+      echo "Method 2 (instance-data.json): \$VM_NAME" >> /tmp/hostname-setup.log
+    fi
+    # Method 3: Try reading from /var/lib/cloud/data/instance-id
+    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
+      if [ -f /var/lib/cloud/data/instance-id ]; then
+        VM_NAME=\$(cat /var/lib/cloud/data/instance-id 2>/dev/null || echo "")
+        echo "Method 3 (instance-id file): \$VM_NAME" >> /tmp/hostname-setup.log
+      fi
+    fi
+    # Apply hostname if found and not a default distro name
+    echo "Final VM_NAME: \$VM_NAME" >> /tmp/hostname-setup.log
+    if [ -n "\$VM_NAME" ] && [ "\$VM_NAME" != "ubuntu" ] && [ "\$VM_NAME" != "debian" ] && [ "\$VM_NAME" != "localhost" ]; then
+      echo "Setting hostname to: \$VM_NAME" >> /tmp/hostname-setup.log
+      echo "\$VM_NAME" > /etc/hostname
+      hostnamectl set-hostname "\$VM_NAME" 2>/dev/null || hostname "\$VM_NAME"
+      # Update /etc/hosts
+      sed -i "s/127.0.1.1.*/127.0.1.1 \$VM_NAME/" /etc/hosts
+      if ! grep -q "127.0.1.1" /etc/hosts; then
+        echo "127.0.1.1 \$VM_NAME" >> /etc/hosts
+      fi
+      echo "Hostname successfully set" >> /tmp/hostname-setup.log
+    else
+      echo "Hostname not set - invalid or default name" >> /tmp/hostname-setup.log
     fi
   - mkdir -p /etc/ssh/sshd_config.d
   - chmod 755 /etc/ssh/sshd_config.d
@@ -1701,6 +1725,10 @@ convert_to_template() {
             echo ""
             echo -e "${BLUE}To clone this template:${NC}"
             echo -e "  qm clone ${vmid} <new-vmid> --name <new-name> --full"
+            echo ""
+            echo -e "${YELLOW}Important: Hostname Configuration${NC}"
+            echo -e "  The cloned VM will automatically set its hostname from the VM name"
+            echo -e "  Check /tmp/hostname-setup.log inside the VM for debugging if needed"
             echo ""
             echo -e "${BLUE}SSH Configuration:${NC}"
             echo -e "  Port: ${CYAN}${TMPL_SSH_PORT}${NC}"
