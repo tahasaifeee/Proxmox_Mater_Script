@@ -1547,17 +1547,9 @@ Port ${TMPL_SSH_PORT}"
 
     cat > "$cloudinit_file" <<EOF
 #cloud-config
-# Don't set static hostname - will be configured from VM name on first boot
-
-users:
-  - name: root
-    lock_passwd: false
-    shell: /bin/bash
-
-chpasswd:
-  list: |
-    root:${TMPL_ROOT_PASSWORD}
-  expire: False
+# Hostname is managed by Proxmox cloud-init metadata (not set here)
+# Username and password are managed by Proxmox cloud-init metadata (not set here)
+# This file only manages SSH configuration
 
 ssh_pwauth: true
 disable_root: false
@@ -1571,42 +1563,6 @@ $(echo "$ssh_config" | sed 's/^/      /')
     owner: root:root
 
 runcmd:
-  - |
-    # Set hostname from Proxmox VM name using multiple methods
-    echo "=== Hostname Configuration Debug ===" > /tmp/hostname-setup.log
-    # Method 1: Try reading from DMI/SMBIOS (Proxmox sets VM name here)
-    VM_NAME=\$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr -d ' ' || echo "")
-    echo "Method 1 (DMI product_name): '\$VM_NAME'" >> /tmp/hostname-setup.log
-    # Method 2: Try cloud-init instance data via cloud-init query
-    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
-      VM_NAME=\$(cloud-init query local_hostname 2>/dev/null | tr -d '"' || echo "")
-      echo "Method 2 (cloud-init query): '\$VM_NAME'" >> /tmp/hostname-setup.log
-    fi
-    # Method 3: Try reading from cloud-init instance-data JSON
-    if [ -z "\$VM_NAME" ] || [ "\$VM_NAME" = "ubuntu" ] || [ "\$VM_NAME" = "debian" ]; then
-      VM_NAME=\$(grep -oP '"local-hostname":\s*"\K[^"]+' /run/cloud-init/instance-data.json 2>/dev/null || echo "")
-      echo "Method 3 (instance-data.json): '\$VM_NAME'" >> /tmp/hostname-setup.log
-    fi
-    # Apply hostname if found and not a default/invalid name
-    echo "Final VM_NAME: '\$VM_NAME'" >> /tmp/hostname-setup.log
-    # Filter out invalid names: empty, default distro names, localhost, or UUIDs
-    if [ -n "\$VM_NAME" ] && \
-       [ "\$VM_NAME" != "ubuntu" ] && \
-       [ "\$VM_NAME" != "debian" ] && \
-       [ "\$VM_NAME" != "localhost" ] && \
-       ! echo "\$VM_NAME" | grep -qE '^[a-f0-9]{32,}$'; then
-      echo "Setting hostname to: '\$VM_NAME'" >> /tmp/hostname-setup.log
-      echo "\$VM_NAME" > /etc/hostname
-      hostnamectl set-hostname "\$VM_NAME" 2>/dev/null || hostname "\$VM_NAME"
-      # Update /etc/hosts
-      sed -i "s/127.0.1.1.*/127.0.1.1 \$VM_NAME/" /etc/hosts 2>/dev/null
-      if ! grep -q "127.0.1.1" /etc/hosts 2>/dev/null; then
-        echo "127.0.1.1 \$VM_NAME" >> /etc/hosts
-      fi
-      echo "Hostname successfully set to '\$VM_NAME'" >> /tmp/hostname-setup.log
-    else
-      echo "Hostname not set - invalid, default, or UUID detected" >> /tmp/hostname-setup.log
-    fi
   - mkdir -p /etc/ssh/sshd_config.d
   - chmod 755 /etc/ssh/sshd_config.d
   - |
@@ -1693,14 +1649,17 @@ EOF
     echo -e "${GREEN}✓ Cloud-init configuration applied${NC}"
     echo ""
     echo -e "${BLUE}Configuration Summary:${NC}"
-    echo -e "  • Root password: ${GREEN}Set${NC}"
-    echo -e "  • Root login: ${GREEN}Enabled${NC}"
-    echo -e "  • SSH port: ${CYAN}${TMPL_SSH_PORT}${NC}"
+    echo -e "  • Hostname: ${GREEN}Will be set from VM name (via Proxmox metadata)${NC}"
+    echo -e "  • Username: ${CYAN}root${NC} ${GREEN}(via Proxmox metadata)${NC}"
+    echo -e "  • Password: ${GREEN}Set (via Proxmox metadata)${NC}"
+    echo -e "  • SSH port: ${CYAN}${TMPL_SSH_PORT}${NC} ${GREEN}(via custom snippet)${NC}"
+    echo -e "  • Password auth: ${GREEN}Enabled (via custom snippet)${NC}"
+    echo -e "  • Root login: ${GREEN}Enabled (via custom snippet)${NC}"
     if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
         echo -e "  • QEMU Guest Agent: ${GREEN}Will be installed on first boot${NC}"
     fi
     echo ""
-    echo -e "${YELLOW}Note: Changes will be applied on first VM boot${NC}"
+    echo -e "${YELLOW}Note: SSH settings will be applied on first VM boot${NC}"
     echo -e "${YELLOW}The VM will automatically reboot after configuration${NC}"
     echo ""
 
@@ -1729,9 +1688,10 @@ convert_to_template() {
             echo -e "${BLUE}To clone this template:${NC}"
             echo -e "  qm clone ${vmid} <new-vmid> --name <new-name> --full"
             echo ""
-            echo -e "${YELLOW}Important: Hostname Configuration${NC}"
-            echo -e "  The cloned VM will automatically set its hostname from the VM name"
-            echo -e "  Check /tmp/hostname-setup.log inside the VM for debugging if needed"
+            echo -e "${YELLOW}Important: After Cloning${NC}"
+            echo -e "  The VM hostname will be set automatically to match the VM name"
+            echo -e "  Proxmox handles this through cloud-init metadata"
+            echo -e "  Example: VM named 'web-server-01' → hostname 'web-server-01'"
             echo ""
             echo -e "${BLUE}SSH Configuration:${NC}"
             echo -e "  Port: ${CYAN}${TMPL_SSH_PORT}${NC}"
