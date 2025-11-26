@@ -1510,6 +1510,320 @@ create_vm_from_image() {
     return 0
 }
 
+# Function to wait for VM to boot and get IP
+wait_for_vm_ip() {
+    local vmid=$1
+    local max_wait=120
+    local elapsed=0
+
+    echo -e "${CYAN}Waiting for VM to boot and get IP address...${NC}"
+
+    while [ $elapsed -lt $max_wait ]; do
+        local vm_ip=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | grep -oP '"ip-address":\s*"\K[0-9.]+' | grep -v "127.0.0.1" | head -n1)
+
+        if [ -n "$vm_ip" ]; then
+            echo -e "${GREEN}✓ VM booted successfully${NC}"
+            echo -e "${CYAN}IP Address: $vm_ip${NC}"
+            echo "$vm_ip"
+            return 0
+        fi
+
+        echo -n "."
+        sleep 5
+        ((elapsed+=5))
+    done
+
+    echo ""
+    echo -e "${YELLOW}Could not detect IP via qemu-agent, trying alternative method...${NC}"
+
+    # Fallback: try to get IP from ARP or qm command
+    sleep 10
+    local vm_ip=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | grep -oP '"ip-address":\s*"\K[0-9.]+' | grep -v "127.0.0.1" | head -n1)
+
+    if [ -n "$vm_ip" ]; then
+        echo -e "${GREEN}✓ Found IP: $vm_ip${NC}"
+        echo "$vm_ip"
+        return 0
+    fi
+
+    echo -e "${RED}✗ Could not detect VM IP address${NC}"
+    return 1
+}
+
+# Function to wait for SSH to be ready
+wait_for_ssh() {
+    local vm_ip=$1
+    local ssh_port=$2
+    local password=$3
+    local max_wait=60
+    local elapsed=0
+
+    echo -e "${CYAN}Waiting for SSH to be ready...${NC}"
+
+    while [ $elapsed -lt $max_wait ]; do
+        if sshpass -p "$password" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$ssh_port" root@"$vm_ip" "echo test" &>/dev/null; then
+            echo -e "${GREEN}✓ SSH is ready${NC}"
+            return 0
+        fi
+
+        echo -n "."
+        sleep 5
+        ((elapsed+=5))
+    done
+
+    echo ""
+    echo -e "${RED}✗ SSH not responding${NC}"
+    return 1
+}
+
+# Function to configure VM live via SSH
+configure_vm_live() {
+    local vmid=$1
+    local vm_ip=$2
+    local distro=$3
+
+    echo -e "${CYAN}Configuring VM via SSH...${NC}"
+    echo ""
+
+    # Detect package manager
+    local pkg_manager=""
+    local pkg_update_cmd=""
+    local pkg_install_cmd=""
+
+    if [[ "$distro" =~ ubuntu|debian ]]; then
+        pkg_manager="apt"
+        pkg_update_cmd="DEBIAN_FRONTEND=noninteractive apt-get update -qq"
+        pkg_install_cmd="DEBIAN_FRONTEND=noninteractive apt-get install -y"
+    elif [[ "$distro" =~ alma|rocky|centos|fedora|oracle ]]; then
+        pkg_manager="dnf"
+        pkg_update_cmd="dnf check-update -q || true"
+        pkg_install_cmd="dnf install -y"
+    fi
+
+    # Configure via SSH
+    echo -e "${BLUE}1. Setting hostname...${NC}"
+    sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+        hostnamectl set-hostname "$TMPL_NAME" 2>/dev/null || hostname "$TMPL_NAME"
+        echo "$TMPL_NAME" > /etc/hostname
+        sed -i "s/127.0.1.1.*/127.0.1.1 $TMPL_NAME/" /etc/hosts
+        if ! grep -q "127.0.1.1" /etc/hosts; then
+            echo "127.0.1.1 $TMPL_NAME" >> /etc/hosts
+        fi
+EOSSH
+    echo -e "${GREEN}   ✓ Hostname set to: $TMPL_NAME${NC}"
+
+    # Configure SSH
+    echo -e "${BLUE}2. Configuring SSH...${NC}"
+    sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+        # Create sshd_config.d directory
+        mkdir -p /etc/ssh/sshd_config.d
+        chmod 755 /etc/ssh/sshd_config.d
+
+        # Create SSH config file
+        cat > /etc/ssh/sshd_config.d/50-proxmox-template.conf <<'EOF'
+# Proxmox Template SSH Configuration
+PasswordAuthentication yes
+PermitRootLogin yes
+PubkeyAuthentication yes
+Port $TMPL_SSH_PORT
+EOF
+
+        # Ensure main config includes .d directory
+        if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
+            echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
+        fi
+
+        # Fallback: Update main config directly
+        sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sed -i 's/^#*Port.*/Port $TMPL_SSH_PORT/' /etc/ssh/sshd_config
+EOSSH
+    echo -e "${GREEN}   ✓ SSH configured (Port: $TMPL_SSH_PORT)${NC}"
+
+    # Install qemu-guest-agent if requested
+    if [ "$TMPL_INSTALL_AGENT" = "y" ]; then
+        echo -e "${BLUE}3. Installing QEMU Guest Agent...${NC}"
+        sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+            $pkg_update_cmd
+            $pkg_install_cmd qemu-guest-agent
+            systemctl enable qemu-guest-agent
+            systemctl start qemu-guest-agent
+EOSSH
+        echo -e "${GREEN}   ✓ QEMU Guest Agent installed${NC}"
+    fi
+
+    echo ""
+    return 0
+}
+
+# Function to install optional packages
+install_optional_packages() {
+    local vm_ip=$1
+    local distro=$2
+
+    print_header
+    echo -e "${YELLOW}Optional Package Installation${NC}"
+    echo ""
+    echo -e "${CYAN}Would you like to install additional packages?${NC}"
+    echo ""
+    echo "Available packages:"
+    echo "  1. Docker"
+    echo "  2. MySQL/MariaDB"
+    echo "  3. Apache"
+    echo "  4. Nginx"
+    echo "  5. Skip (no additional packages)"
+    echo ""
+
+    read -p "Select packages to install (comma-separated, e.g., 1,2,4 or 5 to skip): " pkg_choice
+
+    if [ "$pkg_choice" = "5" ]; then
+        echo -e "${YELLOW}Skipping optional packages${NC}"
+        return 0
+    fi
+
+    # Detect package manager
+    local pkg_manager=""
+    local pkg_install_cmd=""
+
+    if [[ "$distro" =~ ubuntu|debian ]]; then
+        pkg_install_cmd="DEBIAN_FRONTEND=noninteractive apt-get install -y"
+    elif [[ "$distro" =~ alma|rocky|centos|fedora|oracle ]]; then
+        pkg_install_cmd="dnf install -y"
+    fi
+
+    echo ""
+    echo -e "${CYAN}Installing selected packages...${NC}"
+
+    IFS=',' read -ra PACKAGES <<< "$pkg_choice"
+    for pkg in "${PACKAGES[@]}"; do
+        case $pkg in
+            1)
+                echo -e "${BLUE}Installing Docker...${NC}"
+                sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+                    curl -fsSL https://get.docker.com | sh
+                    systemctl enable docker
+                    systemctl start docker
+EOSSH
+                echo -e "${GREEN}✓ Docker installed${NC}"
+                ;;
+            2)
+                echo -e "${BLUE}Installing MySQL/MariaDB...${NC}"
+                sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+                    $pkg_install_cmd mariadb-server
+                    systemctl enable mariadb
+                    systemctl start mariadb
+EOSSH
+                echo -e "${GREEN}✓ MariaDB installed${NC}"
+                ;;
+            3)
+                echo -e "${BLUE}Installing Apache...${NC}"
+                sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+                    $pkg_install_cmd apache2 || $pkg_install_cmd httpd
+                    systemctl enable apache2 || systemctl enable httpd
+                    systemctl start apache2 || systemctl start httpd
+EOSSH
+                echo -e "${GREEN}✓ Apache installed${NC}"
+                ;;
+            4)
+                echo -e "${BLUE}Installing Nginx...${NC}"
+                sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+                    $pkg_install_cmd nginx
+                    systemctl enable nginx
+                    systemctl start nginx
+EOSSH
+                echo -e "${GREEN}✓ Nginx installed${NC}"
+                ;;
+        esac
+    done
+
+    echo ""
+    read -p "Press Enter to continue..."
+    return 0
+}
+
+# Function to verify VM services
+verify_vm_services() {
+    local vm_ip=$1
+    local vmid=$2
+
+    print_header
+    echo -e "${YELLOW}Verifying Services${NC}"
+    echo ""
+
+    # Check QEMU Guest Agent
+    echo -e "${BLUE}Checking QEMU Guest Agent...${NC}"
+    if qm guest cmd "$vmid" ping &>/dev/null; then
+        echo -e "${GREEN}✓ QEMU Guest Agent is running${NC}"
+    else
+        echo -e "${YELLOW}⚠ QEMU Guest Agent not responding (may not be installed)${NC}"
+    fi
+
+    # Check cloud-init
+    echo -e "${BLUE}Checking cloud-init...${NC}"
+    local cloudinit_status=$(sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" "cloud-init status --wait 2>/dev/null || echo 'not-installed'")
+    if [[ "$cloudinit_status" =~ "done" ]] || [[ "$cloudinit_status" =~ "status: done" ]]; then
+        echo -e "${GREEN}✓ cloud-init completed successfully${NC}"
+    else
+        echo -e "${YELLOW}⚠ cloud-init status: $cloudinit_status${NC}"
+    fi
+
+    # Check SSH
+    echo -e "${BLUE}Checking SSH service...${NC}"
+    local ssh_status=$(sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" "systemctl is-active sshd || systemctl is-active ssh")
+    if [ "$ssh_status" = "active" ]; then
+        echo -e "${GREEN}✓ SSH service is active${NC}"
+    else
+        echo -e "${RED}✗ SSH service is not active${NC}"
+    fi
+
+    echo ""
+    read -p "Press Enter to continue..."
+    return 0
+}
+
+# Function to cleanup and prepare for templating
+cleanup_for_template() {
+    local vm_ip=$1
+    local vmid=$2
+
+    echo -e "${CYAN}Preparing VM for templating...${NC}"
+    echo ""
+
+    # Clean up cloud-init
+    echo -e "${BLUE}Cleaning cloud-init data...${NC}"
+    sshpass -p "$TMPL_ROOT_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 root@"$vm_ip" <<EOSSH
+        cloud-init clean --logs --seed
+        rm -rf /var/lib/cloud/instances/*
+        rm -f /etc/machine-id
+        touch /etc/machine-id
+EOSSH
+    echo -e "${GREEN}✓ Cloud-init cleaned${NC}"
+
+    # Shutdown VM
+    echo -e "${BLUE}Shutting down VM...${NC}"
+    qm shutdown "$vmid" --timeout 60
+
+    # Wait for shutdown
+    local max_wait=60
+    local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        local vm_status=$(qm status "$vmid" | awk '{print $2}')
+        if [ "$vm_status" = "stopped" ]; then
+            echo -e "${GREEN}✓ VM shut down successfully${NC}"
+            return 0
+        fi
+        sleep 2
+        ((elapsed+=2))
+    done
+
+    echo -e "${YELLOW}⚠ VM did not shut down gracefully, forcing stop...${NC}"
+    qm stop "$vmid"
+    sleep 5
+    echo -e "${GREEN}✓ VM stopped${NC}"
+
+    return 0
+}
+
 # Function to customize VM
 customize_vm() {
     local vmid=$1
