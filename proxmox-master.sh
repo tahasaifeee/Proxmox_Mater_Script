@@ -487,6 +487,7 @@ troubleshooting_menu() {
         echo "18. Generate full diagnostic report"
         echo ""
         echo "0.  Back to main menu"
+        echo "x.  Exit script"
         echo ""
         read -p "Select option: " ts_option
 
@@ -547,6 +548,12 @@ troubleshooting_menu() {
                 ;;
             0)
                 break
+                ;;
+            x|X|q|Q)
+                print_header
+                echo -e "${GREEN}Thank you for using Proxmox Master Script!${NC}"
+                echo ""
+                exit 0
                 ;;
             *)
                 echo -e "${RED}Invalid selection${NC}"
@@ -2124,6 +2131,7 @@ template_creator_menu() {
         echo "13. Fedora 39"
         echo ""
         echo "0.  Back to main menu"
+        echo "x.  Exit script"
         echo ""
         read -p "Select option: " distro_choice
 
@@ -2170,6 +2178,12 @@ template_creator_menu() {
             0)
                 break
                 ;;
+            x|X|q|Q)
+                print_header
+                echo -e "${GREEN}Thank you for using Proxmox Master Script!${NC}"
+                echo ""
+                exit 0
+                ;;
             *)
                 echo -e "${RED}Invalid selection${NC}"
                 sleep 1
@@ -2184,6 +2198,7 @@ main_menu() {
         print_header
         echo "1. Troubleshooting & Diagnostics"
         echo "2. VM Template Creator"
+        echo ""
         echo "0. Exit"
         echo ""
         read -p "Select an option: " choice
@@ -2195,7 +2210,7 @@ main_menu() {
             2)
                 template_creator_menu
                 ;;
-            0)
+            0|x|X|q|Q)
                 print_header
                 echo -e "${GREEN}Thank you for using Proxmox Master Script!${NC}"
                 echo ""
