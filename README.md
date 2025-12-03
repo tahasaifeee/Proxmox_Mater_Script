@@ -173,18 +173,20 @@ The VM Template Creator is a powerful feature that automates the creation of sta
 - Storage location (default: local-lvm)
 - Network bridge (default: vmbr0)
 
-**Security Settings:**
-- Custom SSH port (default: 22)
-- Root password configuration
-- Enable/disable root login with password
-- Password authentication via dedicated SSH config file
-- Creates `/etc/ssh/sshd_config.d/50-cloud-init-password-auth.conf` for clean configuration management
-- Fallback configuration for older systems without `sshd_config.d` support
+**Cloud-init Configuration:**
+- Username (default: root) - automatically configured on first boot
+- Password (with confirmation) - secure credential setup
+- IP Configuration:
+  - DHCP (automatic IP assignment)
+  - Static IP with custom gateway
+- DNS servers (optional, comma-separated)
+- SSH public key (optional) - for key-based authentication
+- Cloud-init drive attached to ide2
 
 **System Configuration:**
-- QEMU Guest Agent installation (recommended)
-- Cloud-init integration
-- Automatic package updates during setup
+- QEMU Guest Agent enabled by default
+- Cloud-init integration with Proxmox native metadata
+- VGA display (std) with serial console support
 
 #### SSH Password Authentication Configuration
 
@@ -209,14 +211,63 @@ The template creator implements a robust SSH configuration system to ensure pass
 - ✅ Both password and key-based authentication supported
 - ✅ Compatible with modern and legacy SSH configurations
 
+#### Cloud-init Drive Configuration
+
+The template creator now includes comprehensive cloud-init support for automated VM initialization:
+
+**What is Cloud-init?**
+Cloud-init is an industry-standard method for cloud instance initialization. It runs on first boot to configure the VM with your specified settings.
+
+**Configuration Options:**
+
+1. **User Credentials**
+   - Username (default: root)
+   - Password with confirmation for security
+   - Credentials are automatically set up on first boot
+
+2. **Network Configuration**
+   - **DHCP Mode**: Automatic IP address assignment (default)
+   - **Static IP Mode**:
+     - Custom IP address (e.g., 192.168.1.100/24)
+     - Gateway configuration
+     - Full control over network settings
+
+3. **DNS Configuration**
+   - Optional DNS server configuration
+   - Supports multiple DNS servers (comma-separated)
+   - Example: 8.8.8.8,8.8.4.4
+
+4. **SSH Key Authentication**
+   - Optional SSH public key
+   - Enables passwordless SSH access
+   - Works alongside password authentication
+
+**How It Works:**
+1. Cloud-init drive is attached to VM (ide2)
+2. Configuration is applied using Proxmox native cloud-init metadata
+3. On first boot, cloud-init reads the configuration
+4. System is automatically configured (user, password, network, SSH)
+5. No manual configuration needed for basic setup
+
+**Benefits:**
+- ✅ **Automated Setup**: No manual configuration needed
+- ✅ **Consistent Configuration**: Same setup across all cloned VMs
+- ✅ **Proxmox Native**: Uses built-in Proxmox cloud-init support
+- ✅ **Flexible**: Supports both DHCP and static IP configurations
+- ✅ **Secure**: Password confirmation prevents typos
+- ✅ **Quick Deployment**: VMs are ready immediately after first boot
+
 #### Template Creation Workflow
 
 1. **Select Distribution**: Choose from 13 supported Linux distributions
-2. **Download Image**: Automatically downloads official cloud image
-3. **Configure Template**: Set VM specifications and security options
-4. **Create VM**: Builds VM from cloud image with your specifications
-5. **Customize**: Applies your security and configuration settings
-6. **Convert to Template**: Finalizes as a reusable template
+2. **Download Image**: Automatically downloads official cloud image from trusted sources
+3. **Configure VM Specifications**: Set CPU, RAM, disk size, storage, and network
+4. **Configure Cloud-init**: Set username, password, network (DHCP/static), DNS, and SSH keys
+5. **Review Configuration**: Verify all settings before VM creation
+6. **Create VM**: Builds VM from cloud image with cloud-init drive configured
+7. **First Boot**: Start VM manually - cloud-init automatically configures the system
+8. **Manual Customization**: Install additional software and configure as needed
+9. **Convert to Template**: Shut down VM and convert to reusable template
 
 ### Using Templates
 
@@ -234,16 +285,19 @@ qm clone 9000 100 --name my-ubuntu-server --full
 
 ✅ **Consistency** - All VMs from the same template have identical configurations
 ✅ **Speed** - Deploy new VMs in seconds instead of installing from ISO
-✅ **Standardization** - Enforce security policies and configurations
+✅ **Automated Configuration** - Cloud-init handles initial setup automatically on first boot
+✅ **Standardization** - Enforce security policies and configurations across all VMs
 ✅ **Efficiency** - Reduces manual configuration and human error
-✅ **Flexibility** - Customize templates for different use cases
+✅ **Flexibility** - Customize templates for different use cases (DHCP or static IP)
+✅ **Security** - Pre-configured with user credentials and SSH access
 ✅ **Best Practices** - Uses official cloud images optimized for virtualization
 
 ### Requirements
 
-The script automatically installs required packages:
-- `wget` - For downloading cloud images
-- `libguestfs-tools` - For image customization (optional)
+The script automatically checks and installs required packages:
+- `wget` - For downloading cloud images from official sources
+
+No other dependencies needed - cloud-init configuration is handled natively by Proxmox.
 
 ### Storage Considerations
 
@@ -571,6 +625,23 @@ For issues or questions:
 
 ## Changelog
 
+### Version 3.2 - Cloud-init Drive Configuration
+- ✨ **NEW**: Comprehensive cloud-init drive configuration during VM creation
+- ✨ **NEW**: Interactive prompts for cloud-init settings:
+  - Username configuration (default: root)
+  - Password setup with confirmation
+  - IP configuration (DHCP or static with gateway)
+  - Optional DNS server configuration
+  - Optional SSH public key support
+- ✨ **NEW**: Cloud-init drive automatically attached to ide2
+- ✨ **NEW**: Proxmox native cloud-init integration using `qm set` commands
+- ✨ **NEW**: Configuration summary display before and after VM creation
+- ✨ **NEW**: Quick exit option (x/q) from all menus
+- 🔧 **IMPROVED**: Simplified workflow - VM created with cloud-init, user configures manually after first boot
+- 🔧 **IMPROVED**: VGA display (std) instead of serial-only console
+- 🔧 **IMPROVED**: Automatic system configuration on first boot via cloud-init
+- 📚 **DOCS**: Comprehensive cloud-init documentation and workflow guide
+
 ### Version 3.1 - Enhanced Template Creator
 - ✨ **NEW**: Oracle Linux 9 and 8 support (official Oracle cloud images)
 - ✨ **NEW**: Automatic storage detection showing compatible storage with type, size, and usage
@@ -615,7 +686,7 @@ For issues or questions:
 
 ---
 
-**Current Version**: 3.1 (Enhanced Template Creator)
-**Last Updated**: 2025
+**Current Version**: 3.2 (Cloud-init Drive Configuration)
+**Last Updated**: December 2025
 **Compatible with**: Proxmox VE 7.x and 8.x (Standalone and Cluster)
 **Total Distributions Supported**: 13 (Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS Stream, Oracle Linux, Fedora)
