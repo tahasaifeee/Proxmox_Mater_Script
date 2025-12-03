@@ -1401,6 +1401,50 @@ get_template_config() {
     fi
     echo ""
 
+    # Cloud-init configuration
+    echo -e "${BLUE}=== Cloud-init Configuration ===${NC}"
+    echo ""
+
+    # Username
+    read -p "Enter cloud-init username [root]: " ci_user
+    ci_user=${ci_user:-root}
+
+    # Password
+    read -sp "Enter cloud-init password: " ci_password
+    echo ""
+    read -sp "Confirm password: " ci_password_confirm
+    echo ""
+
+    if [ "$ci_password" != "$ci_password_confirm" ]; then
+        echo -e "${RED}Passwords do not match!${NC}"
+        sleep 2
+        return 1
+    fi
+
+    # SSH keys (optional)
+    echo ""
+    read -p "Enter SSH public key (optional, press Enter to skip): " ci_sshkey
+
+    # IP configuration
+    echo ""
+    echo -e "${BLUE}IP Configuration:${NC}"
+    echo "1. DHCP (automatic)"
+    echo "2. Static IP"
+    read -p "Select IP configuration [1]: " ip_choice
+    ip_choice=${ip_choice:-1}
+
+    ci_ipconfig="ip=dhcp"
+    if [ "$ip_choice" = "2" ]; then
+        read -p "Enter IP address (e.g., 192.168.1.100/24): " static_ip
+        read -p "Enter gateway: " gateway
+        ci_ipconfig="ip=${static_ip},gw=${gateway}"
+    fi
+
+    # DNS servers (optional)
+    read -p "Enter DNS servers (comma-separated, optional): " ci_nameserver
+
+    echo ""
+
     # Export variables
     export TMPL_VMID="$vmid"
     export TMPL_NAME="$template_name"
@@ -1409,6 +1453,11 @@ get_template_config() {
     export TMPL_DISK_SIZE="$disk_size"
     export TMPL_STORAGE="$storage"
     export TMPL_BRIDGE="$bridge"
+    export TMPL_CI_USER="$ci_user"
+    export TMPL_CI_PASSWORD="$ci_password"
+    export TMPL_CI_SSHKEY="$ci_sshkey"
+    export TMPL_CI_IPCONFIG="$ci_ipconfig"
+    export TMPL_CI_NAMESERVER="$ci_nameserver"
 
     return 0
 }
@@ -1479,10 +1528,47 @@ create_vm_from_image() {
     # Resize disk to requested size
     qm resize "$vmid" scsi0 "$TMPL_DISK_SIZE"
 
-    echo -e "${GREEN}✓ VM created successfully${NC}"
+    # Add cloud-init drive
+    echo "Adding cloud-init drive..."
+    qm set "$vmid" --ide2 "${TMPL_STORAGE}:cloudinit"
+
+    # Add serial console and VGA
+    qm set "$vmid" --serial0 socket --vga std
+
+    # Enable QEMU guest agent
+    qm set "$vmid" --agent enabled=1
+
+    # Configure cloud-init settings
+    echo "Configuring cloud-init..."
+    qm set "$vmid" --ciuser "$TMPL_CI_USER"
+    qm set "$vmid" --cipassword "$TMPL_CI_PASSWORD"
+    qm set "$vmid" --ipconfig0 "$TMPL_CI_IPCONFIG"
+
+    # Add SSH key if provided
+    if [ -n "$TMPL_CI_SSHKEY" ]; then
+        qm set "$vmid" --sshkeys "$TMPL_CI_SSHKEY"
+    fi
+
+    # Add nameserver if provided
+    if [ -n "$TMPL_CI_NAMESERVER" ]; then
+        qm set "$vmid" --nameserver "$TMPL_CI_NAMESERVER"
+    fi
+
+    echo -e "${GREEN}✓ VM created successfully with cloud-init${NC}"
     echo ""
-    echo -e "${YELLOW}Note: VM is created but not started${NC}"
-    echo -e "${YELLOW}You can now manually configure and start it${NC}"
+    echo -e "${BLUE}Cloud-init Configuration:${NC}"
+    echo -e "  Username: ${CYAN}${TMPL_CI_USER}${NC}"
+    echo -e "  Password: ${CYAN}Set${NC}"
+    echo -e "  IP Config: ${CYAN}${TMPL_CI_IPCONFIG}${NC}"
+    if [ -n "$TMPL_CI_NAMESERVER" ]; then
+        echo -e "  DNS: ${CYAN}${TMPL_CI_NAMESERVER}${NC}"
+    fi
+    if [ -n "$TMPL_CI_SSHKEY" ]; then
+        echo -e "  SSH Key: ${CYAN}Configured${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}Note: Start the VM to apply cloud-init configuration${NC}"
+    echo -e "${YELLOW}Cloud-init will run on first boot and configure the system${NC}"
 
     return 0
 }
@@ -2045,6 +2131,7 @@ create_template_workflow() {
     print_header
     echo -e "${YELLOW}Step 3: Configuration Summary${NC}"
     echo ""
+    echo -e "${BLUE}=== VM Configuration ===${NC}"
     echo -e "VM ID: ${CYAN}${TMPL_VMID}${NC}"
     echo -e "Name: ${CYAN}${TMPL_NAME}${NC}"
     echo -e "CPU Cores: ${CYAN}${TMPL_CPU}${NC}"
@@ -2053,8 +2140,18 @@ create_template_workflow() {
     echo -e "Storage: ${CYAN}${TMPL_STORAGE}${NC}"
     echo -e "Network Bridge: ${CYAN}${TMPL_BRIDGE}${NC}"
     echo ""
-    echo -e "${YELLOW}Note: VM will be created but not configured${NC}"
-    echo -e "${YELLOW}You will configure it manually after creation${NC}"
+    echo -e "${BLUE}=== Cloud-init Configuration ===${NC}"
+    echo -e "Username: ${CYAN}${TMPL_CI_USER}${NC}"
+    echo -e "Password: ${CYAN}Set${NC}"
+    echo -e "IP Config: ${CYAN}${TMPL_CI_IPCONFIG}${NC}"
+    if [ -n "$TMPL_CI_NAMESERVER" ]; then
+        echo -e "DNS: ${CYAN}${TMPL_CI_NAMESERVER}${NC}"
+    fi
+    if [ -n "$TMPL_CI_SSHKEY" ]; then
+        echo -e "SSH Key: ${CYAN}Configured${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}Note: Cloud-init will run on first boot${NC}"
     echo ""
 
     read -p "Proceed with VM creation? (yes/no): " proceed
